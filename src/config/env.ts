@@ -7,8 +7,12 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
   // WhatsApp
-  WHATSAPP_VERIFY_TOKEN: z.string().min(10, 'Must be at least 10 characters'),
+  WHATSAPP_PHONE_ID: z.string().min(10, 'Must be a valid phone number ID'),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().min(10, 'Must be a valid business account ID'),
+  WHATSAPP_APP_ID: z.string().min(10, 'Must be a valid app ID'),
   WHATSAPP_APP_SECRET: z.string().min(20, 'Must be at least 20 characters'),
+  WHATSAPP_VERIFY_TOKEN: z.string().min(10, 'Must be at least 10 characters'),
+  WHATSAPP_ACCESS_TOKEN: z.string().min(20, 'Must be a valid access token'),
   WHATSAPP_TEMPLATE_INITIAL: z
     .string()
     .min(1, 'Must not be empty')
