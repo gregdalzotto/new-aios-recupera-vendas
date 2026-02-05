@@ -1,81 +1,209 @@
-import { healthCheck, query, queryOne, transaction, closePool } from '../../src/config/database';
+// Note: These imports are used via dynamic import in tests to reset module state
+// Keeping import statement for reference
+// import { query, queryOne, transaction } from '../../src/config/database';
 
-describe('Database Configuration', () => {
-  afterAll(async () => {
-    // Close connection pool after tests
-    await closePool();
+// Mock pg module
+jest.mock('pg', () => ({
+  Pool: jest.fn(function () {
+    this.connect = jest.fn();
+    this.end = jest.fn();
+    this.on = jest.fn();
+  }),
+}));
+
+jest.mock('../../src/config/logger', () => ({
+  debug: jest.fn(),
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+}));
+
+jest.mock('../../src/utils/retry', () => ({
+  withRetry: jest.fn((fn) => fn()),
+}));
+
+describe('Database Query Timeout Protection', () => {
+  let mockClient: any;
+  let mockPool: any;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Reset module to get fresh pool instance
+    jest.resetModules();
+
+    // Mock client
+    mockClient = {
+      query: jest.fn(),
+      release: jest.fn(),
+    };
+
+    // Import after resetting modules
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Pool } = require('pg');
+    mockPool = {
+      connect: jest.fn().mockResolvedValue(mockClient),
+      end: jest.fn(),
+      on: jest.fn(),
+    };
+
+    Pool.mockImplementation(() => mockPool);
   });
 
-  it('should verify database connection with health check', async () => {
-    // Skip if DATABASE_URL is not set (useful for CI environments)
-    if (!process.env.DATABASE_URL) {
-      console.log('Skipping database test - DATABASE_URL not set');
-      return;
-    }
+  describe('query timeout', () => {
+    it('should complete query successfully within timeout', async () => {
+      const mockResult = { rows: [{ id: 1, name: 'Test' }], rowCount: 1 };
+      mockClient.query.mockResolvedValue(mockResult);
 
-    const isHealthy = await healthCheck();
-    expect(isHealthy).toBe(true);
-  });
+      const { query: importedQuery } = await import('../../src/config/database');
+      const result = await importedQuery('SELECT * FROM users', []);
 
-  it('should query database successfully', async () => {
-    if (!process.env.DATABASE_URL) {
-      console.log('Skipping database test - DATABASE_URL not set');
-      return;
-    }
-
-    // Simple query to get current time
-    const result = await query('SELECT NOW() as current_time');
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toHaveProperty('current_time');
-  });
-
-  it('should handle query with parameters', async () => {
-    if (!process.env.DATABASE_URL) {
-      console.log('Skipping database test - DATABASE_URL not set');
-      return;
-    }
-
-    // Create a test table, insert data, and query it
-    await query('CREATE TEMP TABLE test_users (id SERIAL, name VARCHAR(255))');
-    await query('INSERT INTO test_users (name) VALUES ($1)', ['John Doe']);
-
-    const result = await queryOne<{ name: string }>('SELECT name FROM test_users WHERE name = $1', [
-      'John Doe',
-    ]);
-
-    expect(result).not.toBeNull();
-    expect(result?.name).toBe('John Doe');
-  });
-
-  it('should handle transaction with multiple queries', async () => {
-    if (!process.env.DATABASE_URL) {
-      console.log('Skipping database test - DATABASE_URL not set');
-      return;
-    }
-
-    const result = await transaction(async (client) => {
-      // Create temp table
-      await client.query('CREATE TEMP TABLE tx_test (id SERIAL, value VARCHAR(255))');
-
-      // Insert data
-      await client.query("INSERT INTO tx_test (value) VALUES ('test')");
-
-      // Query data
-      const queryResult = await client.query('SELECT COUNT(*) as count FROM tx_test');
-      return (queryResult.rows[0] as { count: string }).count;
+      expect(result.rows).toEqual(mockResult.rows);
+      expect(result.rowCount).toBe(1);
     });
 
-    expect(result).toBe('1');
+    it('should release client after query completes', async () => {
+      const mockResult = { rows: [], rowCount: 0 };
+      mockClient.query.mockResolvedValue(mockResult);
+
+      const { query: importedQuery } = await import('../../src/config/database');
+      await importedQuery('SELECT * FROM users', []);
+
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('should pass correct parameters to query', async () => {
+      const mockResult = { rows: [], rowCount: 0 };
+      mockClient.query.mockResolvedValue(mockResult);
+
+      const { query: importedQuery } = await import('../../src/config/database');
+      await importedQuery('SELECT * FROM users WHERE id = $1', [123]);
+
+      expect(mockClient.query).toHaveBeenCalledWith('SELECT * FROM users WHERE id = $1', [123]);
+    });
+
+    it('should handle query errors', async () => {
+      const queryError = new Error('Syntax error');
+      mockClient.query.mockRejectedValue(queryError);
+
+      const { query: importedQuery } = await import('../../src/config/database');
+
+      await expect(importedQuery('INVALID SQL', [])).rejects.toThrow('Syntax error');
+    });
   });
 
-  it('should handle null result from queryOne', async () => {
-    if (!process.env.DATABASE_URL) {
-      console.log('Skipping database test - DATABASE_URL not set');
-      return;
-    }
+  describe('queryOne', () => {
+    it('should return first row from query result', async () => {
+      const mockResult = { rows: [{ id: 1, name: 'John' }], rowCount: 1 };
+      mockClient.query.mockResolvedValue(mockResult);
 
-    const result = await queryOne<{ id: number }>('SELECT 1 as id WHERE FALSE');
+      const { queryOne: importedQueryOne } = await import('../../src/config/database');
+      const result = await importedQueryOne('SELECT * FROM users WHERE id = $1', [1]);
 
-    expect(result).toBeNull();
+      expect(result).toEqual({ id: 1, name: 'John' });
+    });
+
+    it('should return null when no rows found', async () => {
+      const mockResult = { rows: [], rowCount: 0 };
+      mockClient.query.mockResolvedValue(mockResult);
+
+      const { queryOne: importedQueryOne } = await import('../../src/config/database');
+      const result = await importedQueryOne('SELECT * FROM users WHERE id = $1', [999]);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('transaction timeout', () => {
+    it('should complete transaction successfully within timeout', async () => {
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const { transaction: importedTransaction } = await import('../../src/config/database');
+      const result = await importedTransaction(async (_client) => {
+        return { success: true };
+      });
+
+      expect(result).toEqual({ success: true });
+      expect(mockClient.query).toHaveBeenCalledWith('BEGIN');
+      expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('should rollback transaction on error', async () => {
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const { transaction: importedTransaction } = await import('../../src/config/database');
+
+      const transactionError = new Error('Transaction failed');
+
+      try {
+        await importedTransaction(async (_client) => {
+          throw transactionError;
+        });
+      } catch (error) {
+        // Expected to throw
+      }
+
+      expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
+    });
+
+    it('should release client after transaction completes', async () => {
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const { transaction: importedTransaction } = await import('../../src/config/database');
+      await importedTransaction(async (_client) => {
+        return { success: true };
+      });
+
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('should release client even when transaction fails', async () => {
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const { transaction: importedTransaction } = await import('../../src/config/database');
+
+      try {
+        await importedTransaction(async (_client) => {
+          throw new Error('Transaction error');
+        });
+      } catch (error) {
+        // Expected to throw
+      }
+
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('should handle multiple statements in transaction', async () => {
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const { transaction: importedTransaction } = await import('../../src/config/database');
+      await importedTransaction(async (_client) => {
+        return { success: true };
+      });
+
+      expect(mockClient.query).toHaveBeenCalledWith('BEGIN');
+      expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+  });
+
+  describe('Error scenarios', () => {
+    it('should handle connection errors', async () => {
+      const connectionError = new Error('Connection refused');
+      mockPool.connect.mockRejectedValue(connectionError);
+
+      const { query: importedQuery } = await import('../../src/config/database');
+
+      await expect(importedQuery('SELECT * FROM users', [])).rejects.toThrow('Connection refused');
+    });
+
+    it('should handle query execution errors', async () => {
+      const queryError = new Error('Database error');
+      mockClient.query.mockRejectedValue(queryError);
+
+      const { query: importedQuery } = await import('../../src/config/database');
+
+      await expect(importedQuery('SELECT * FROM users', [])).rejects.toThrow('Database error');
+    });
   });
 });

@@ -69,4 +69,43 @@ export class ConversationRepository {
       conversationId,
     ]);
   }
+
+  /**
+   * Find conversation by phone number
+   */
+  static async findByPhoneNumber(phoneNumber: string): Promise<Conversation | null> {
+    return queryOne<Conversation>('SELECT * FROM conversations WHERE phone_number = $1', [
+      phoneNumber,
+    ]);
+  }
+
+  /**
+   * Increment message count for conversation
+   */
+  static async incrementMessageCount(conversationId: string): Promise<void> {
+    await query(
+      'UPDATE conversations SET message_count = message_count + 1, updated_at = NOW() WHERE id = $1',
+      [conversationId]
+    );
+  }
+
+  /**
+   * Update last message timestamp
+   */
+  static async updateLastMessageAt(conversationId: string, timestamp: Date): Promise<void> {
+    await query('UPDATE conversations SET last_message_at = $1, updated_at = NOW() WHERE id = $2', [
+      timestamp.toISOString(),
+      conversationId,
+    ]);
+  }
+
+  /**
+   * Update last user message timestamp
+   */
+  static async updateLastUserMessageAt(conversationId: string, timestamp: Date): Promise<void> {
+    await query(
+      'UPDATE conversations SET last_user_message_at = $1, updated_at = NOW() WHERE id = $2',
+      [timestamp.toISOString(), conversationId]
+    );
+  }
 }

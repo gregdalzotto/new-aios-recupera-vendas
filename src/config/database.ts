@@ -6,6 +6,20 @@ import { withRetry } from '../utils/retry';
 // Database connection pool
 let pool: Pool | null = null;
 
+// Query timeout in milliseconds (30 seconds)
+const QUERY_TIMEOUT_MS = 30000;
+
+/**
+ * Create a timeout promise that rejects after specified duration
+ */
+function createTimeoutPromise<T>(ms: number, label: string): Promise<T> {
+  return new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`Query timeout: ${label} exceeded ${ms}ms limit`));
+    }, ms);
+  });
+}
+
 /**
  * Get or create database connection pool
  */
@@ -29,7 +43,7 @@ export function getPool(): Pool {
 }
 
 /**
- * Execute a query on the pool with automatic retry on transient errors
+ * Execute a query on the pool with automatic retry on transient errors and timeout protection
  */
 export async function query<T = unknown>(
   text: string,
@@ -38,7 +52,12 @@ export async function query<T = unknown>(
   return withRetry(async () => {
     const client = await getPool().connect();
     try {
-      const result = await client.query(text, params);
+      // Race between query execution and timeout
+      const result = (await Promise.race([
+        client.query(text, params),
+        createTimeoutPromise<any>(QUERY_TIMEOUT_MS, text.substring(0, 50)),
+      ])) as any;
+
       return {
         rows: result.rows as T[],
         rowCount: result.rowCount || 0,
@@ -58,18 +77,30 @@ export async function queryOne<T = unknown>(text: string, params?: unknown[]): P
 }
 
 /**
- * Execute multiple queries in a transaction
+ * Execute multiple queries in a transaction with timeout protection
  */
 export async function transaction<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
 
   try {
-    await client.query('BEGIN');
-    const result = await callback(client);
-    await client.query('COMMIT');
-    return result;
+    // Wrap entire transaction in timeout
+    const executeTransaction = async (): Promise<T> => {
+      await client.query('BEGIN');
+      const result = await callback(client);
+      await client.query('COMMIT');
+      return result;
+    };
+
+    return await (Promise.race([
+      executeTransaction(),
+      createTimeoutPromise<T>(QUERY_TIMEOUT_MS, 'transaction'),
+    ]) as Promise<T>);
   } catch (error) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      logger.error('Error during transaction rollback', rollbackError);
+    }
     throw error;
   } finally {
     client.release();
