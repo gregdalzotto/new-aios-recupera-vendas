@@ -1,0 +1,63 @@
+{
+  "name": "sara-agente-recuperacao-vendas",
+  "version": "0.1.0",
+  "description": "Sara - Agente IA de Recuperação de Vendas via WhatsApp",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ext .ts",
+    "lint:fix": "eslint src tests --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "migrate": "tsx scripts/migrate.ts",
+    "load-test": "k6 run tests/load/baseline.k6.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "sales-recovery",
+    "ai-agent",
+    "openai",
+    "typescript"
+  ],
+  "author": "Synkra AIOS",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/cors": "^9.0.0",
+    "@supabase/supabase-js": "^2.40.0",
+    "axios": "^1.6.0",
+    "bull": "^4.10.0",
+    "dotenv": "^16.3.1",
+    "fastify": "^4.24.0",
+    "knex": "^2.5.0",
+    "openai": "^4.60.0",
+    "pg": "^8.11.0",
+    "prom-client": "^15.0.0",
+    "redis": "^4.6.0",
+    "winston": "^3.11.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.16.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.55.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.1.0",
+    "ts-jest": "^29.1.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
