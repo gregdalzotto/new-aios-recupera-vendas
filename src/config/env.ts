@@ -9,6 +9,10 @@ const envSchema = z.object({
   // WhatsApp
   WHATSAPP_VERIFY_TOKEN: z.string().min(10, 'Must be at least 10 characters'),
   WHATSAPP_APP_SECRET: z.string().min(20, 'Must be at least 20 characters'),
+  WHATSAPP_TEMPLATE_INITIAL: z
+    .string()
+    .min(1, 'Must not be empty')
+    .regex(/^[a-z0-9_]+$/i, 'Must be a valid template name (alphanumeric and underscores)'),
 
   // Database
   DATABASE_URL: z
