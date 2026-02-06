@@ -39,3 +39,24 @@ jest.mock('pg', () => {
     Client: jest.fn(),
   };
 }, { virtual: true });
+
+// Mock redis module for tests
+jest.mock('redis', () => {
+  const mockClient = {
+    connect: jest.fn().mockResolvedValue(undefined),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue('OK'),
+    incr: jest.fn().mockResolvedValue(1),
+    expire: jest.fn().mockResolvedValue(1),
+    del: jest.fn().mockResolvedValue(0),
+    keys: jest.fn().mockResolvedValue([]),
+    lpush: jest.fn().mockResolvedValue(1),
+    rpop: jest.fn().mockResolvedValue(null),
+    llen: jest.fn().mockResolvedValue(0),
+  };
+
+  return {
+    createClient: jest.fn(() => mockClient),
+  };
+}, { virtual: true });
