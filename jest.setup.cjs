@@ -21,3 +21,21 @@ if (fs.existsSync(envTestPath)) {
     process.env[key.trim()] = value.trim();
   }
 }
+
+// Mock pg module for tests (avoid real database connections)
+jest.mock('pg', () => {
+  const mockPool = {
+    connect: jest.fn().mockResolvedValue({
+      query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      release: jest.fn(),
+    }),
+    on: jest.fn(),
+    query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    end: jest.fn().mockResolvedValue(undefined),
+  };
+
+  return {
+    Pool: jest.fn(() => mockPool),
+    Client: jest.fn(),
+  };
+}, { virtual: true });
