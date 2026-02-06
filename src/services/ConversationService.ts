@@ -1,6 +1,7 @@
 import logger from '../config/logger';
 import { ConversationRepository, Conversation } from '../repositories/ConversationRepository';
 import { AbandonmentRepository } from '../repositories/AbandonmentRepository';
+import { UserRepository } from '../repositories/UserRepository';
 
 /**
  * Conversation states
@@ -273,6 +274,22 @@ export class ConversationService {
       logger.error('Error getting conversation with context', {
         conversationId,
         traceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Check if user has opted out
+   */
+  static async isOptedOut(userId: string): Promise<boolean> {
+    try {
+      const user = await UserRepository.findById(userId);
+      return user?.opted_out ?? false;
+    } catch (error) {
+      logger.error('Error checking opt-out status', {
+        userId,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

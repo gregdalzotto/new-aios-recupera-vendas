@@ -116,4 +116,50 @@ export class MessageRepository {
 
     return result ? parseInt(result.count, 10) : 0;
   }
+
+  /**
+   * Update message fields (whatsapp_message_id, metadata, status, etc.)
+   */
+  static async update(
+    messageId: string,
+    updates: Partial<{
+      whatsapp_message_id: string | null;
+      metadata: Message['metadata'] | null;
+      status: Message['status'];
+      error_message: string | null;
+    }>
+  ): Promise<void> {
+    const fields: string[] = [];
+    const values: Array<unknown> = [];
+    let paramCount = 1;
+
+    if (updates.whatsapp_message_id !== undefined) {
+      fields.push(`whatsapp_message_id = $${paramCount++}`);
+      values.push(updates.whatsapp_message_id);
+    }
+
+    if (updates.metadata !== undefined) {
+      fields.push(`metadata = $${paramCount++}`);
+      values.push(updates.metadata ? JSON.stringify(updates.metadata) : null);
+    }
+
+    if (updates.status !== undefined) {
+      fields.push(`status = $${paramCount++}`);
+      values.push(updates.status);
+    }
+
+    if (updates.error_message !== undefined) {
+      fields.push(`error_message = $${paramCount++}`);
+      values.push(updates.error_message);
+    }
+
+    if (fields.length === 0) {
+      return; // Nothing to update
+    }
+
+    fields.push(`updated_at = NOW()`);
+    values.push(messageId);
+
+    await query(`UPDATE messages SET ${fields.join(', ')} WHERE id = $${paramCount}`, values);
+  }
 }

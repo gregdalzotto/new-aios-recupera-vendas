@@ -6,6 +6,7 @@ import { correlationIdMiddleware } from './middleware/correlationId';
 import { hmacVerificationMiddleware } from './middleware/hmacVerification';
 import { AppError } from './utils/errors';
 import { registerWebhookRoutes } from './routes/webhooks';
+import { registerMessageHandlers } from './jobs/handlers';
 
 let startTime: number;
 
@@ -27,6 +28,17 @@ export async function createServer(): Promise<Server> {
 
   // Register webhook routes
   await registerWebhookRoutes(server);
+
+  // Register job message handlers
+  try {
+    await registerMessageHandlers();
+    logger.info('✅ Message handlers registered');
+  } catch (error) {
+    logger.error('Failed to register message handlers', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 
   // Health check endpoint
   server.get<{
