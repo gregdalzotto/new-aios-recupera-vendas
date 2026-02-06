@@ -5,7 +5,7 @@ import { UserRepository } from '../repositories/UserRepository';
 import { MessageRepository } from '../repositories/MessageRepository';
 import { MessageService } from './MessageService';
 import { SaraContextPayload, SaraMessageHistory } from '../types/sara';
-import { SARA_CONFIG } from '../config/env';
+import { SARA_CONFIG } from '../config/sara';
 
 /**
  * Conversation states

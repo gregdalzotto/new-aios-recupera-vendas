@@ -115,22 +115,3 @@ export const config = {
 };
 
 export type Config = typeof config;
-
-/**
- * SARA-specific configuration for message processing and conversation management
- */
-export const SARA_CONFIG = {
-  message: {
-    historyLimit: parsedConfig.SARA_MESSAGE_HISTORY_LIMIT,
-  },
-  maxCycles: parsedConfig.SARA_MAX_CYCLES,
-  openai: {
-    maxRetries: parsedConfig.SARA_OPENAI_RETRY_MAX_ATTEMPTS,
-    retryDelayMs: parsedConfig.SARA_OPENAI_RETRY_INITIAL_DELAY_MS,
-    systemPromptCacheTtlMs: parsedConfig.SARA_SYSTEM_PROMPT_CACHE_TTL_MS,
-  },
-  webhook: {
-    rateLimitWindowMs: parsedConfig.SARA_WEBHOOK_RATE_LIMIT_WINDOW_MS,
-    rateLimitMaxRequests: parsedConfig.SARA_WEBHOOK_RATE_LIMIT_MAX_REQUESTS,
-  },
-};
