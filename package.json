@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Sara - Agente IA de Recuperação de Vendas via WhatsApp",
   "main": "dist/index.js",
-  "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",

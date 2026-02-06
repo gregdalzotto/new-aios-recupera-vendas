@@ -22,7 +22,7 @@ CREATE OR REPLACE FUNCTION increment_conversation_cycle()
 RETURNS TRIGGER AS $$
 BEGIN
   -- Increment cycle_count only when SARA sends outgoing message
-  IF NEW.sender_type = 'sara' THEN
+  IF NEW.from_sender = 'sara' THEN
     UPDATE conversations
     SET cycle_count = cycle_count + 1
     WHERE id = NEW.conversation_id;
