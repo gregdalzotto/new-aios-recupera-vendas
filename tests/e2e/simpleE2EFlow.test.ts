@@ -49,7 +49,7 @@ describe('E2E Simple 3-Step Flow (SARA-2.5)', () => {
         name: userName,
         phone: userPhone,
         productId: 'prod-comando-ia',
-        value: 291.60,
+        value: 291.6,
         paymentLink: 'https://go.reinoeducacao.com.br/subscribe/aqs-cmd-f01',
         abandonmentId,
         timestamp: Math.floor(Date.now() / 1000),

@@ -1,7 +1,10 @@
 import { readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { Pool } from 'pg';
 import logger from '../src/config/logger';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 async function runMigrations(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;

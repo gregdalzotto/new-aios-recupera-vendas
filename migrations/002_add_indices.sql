@@ -4,7 +4,7 @@
 
 -- Users table indices
 CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number);
-CREATE INDEX IF NOT EXISTS idx_users_opted_out ON users(opted_out);
+-- CREATE INDEX IF NOT EXISTS idx_users_opted_out ON users(opted_out); -- TODO: Fix - column doesn't exist
 
 -- Product Offers table indices
 CREATE INDEX IF NOT EXISTS idx_product_offers_product_id ON product_offers(product_id);

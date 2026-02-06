@@ -1,28 +1,29 @@
-import type { Job } from 'bull';
 import logger from '../config/logger';
+import { SARA_CONFIG } from '../config/sara';
 import { ConversationService } from '../services/ConversationService';
-import { AIService, type AIContext } from '../services/AIService';
+import { AIService } from '../services/AIService';
 import { MessageService } from '../services/MessageService';
 import { MessageRepository } from '../repositories/MessageRepository';
 import { AbandonmentRepository } from '../repositories/AbandonmentRepository';
 import { ConversationRepository } from '../repositories/ConversationRepository';
+import { UserRepository } from '../repositories/UserRepository';
+import { SaraContextPayload } from '../types/sara';
 import ProcessMessageQueue, {
   ProcessMessagePayload,
   ProcessMessageResult,
 } from './processMessageJob';
-import SendMessageQueue, { SendMessagePayload, SendMessageResult } from './sendMessageJob';
+import SendMessageQueue, { SendMessagePayload } from './sendMessageJob';
 
 /**
  * Handler for processing incoming WhatsApp messages
  * Executes: ConversationService → AIService → MessageService → DB persist
  */
 export async function processMessageHandler(
-  job: Job<ProcessMessagePayload>
+  payload: ProcessMessagePayload
 ): Promise<ProcessMessageResult> {
-  const { phoneNumber, messageText, whatsappMessageId, traceId, conversationId } = job.data;
+  const { phoneNumber, messageText, whatsappMessageId, traceId, conversationId } = payload;
 
   logger.info('Processing incoming message', {
-    jobId: job.id,
     phoneNumber,
     traceId,
     messageText: messageText.substring(0, 50),
@@ -89,33 +90,19 @@ export async function processMessageHandler(
     await ConversationRepository.incrementMessageCount(conversation.id);
     await ConversationRepository.updateLastUserMessageAt(conversation.id, new Date());
 
-    // Step 5: Get recent message context
-    const contextMessages = await MessageRepository.findByConversationId(conversation.id, 10);
+    // Step 5: Monta SaraContextPayload (novo!)
+    const saraContext = await buildSaraContext(conversation, phoneNumber, traceId);
 
-    // Step 6: Get abandonment context for AI
-    const abandonment = conversation.abandonment_id
-      ? await AbandonmentRepository.findById(conversation.abandonment_id)
-      : null;
-
-    // Step 7: Call AIService to interpret message
-    const aiContext: AIContext = {
-      conversationId: conversation.id,
-      userId: conversation.user_id,
-      productName: abandonment?.product_id || 'Produto',
-      cartValue: abandonment?.value || 0,
-      offersAlreadyMade: 0, // Could be counted from history
-      messageHistory: contextMessages,
-      traceId,
-    };
-
-    const aiResponse = await AIService.interpretMessage(aiContext, messageText);
+    // Step 6: Call AIService to interpret message COM CONTEXTO DINÂMICO
+    const aiResponse = await AIService.interpretMessage(saraContext, messageText, traceId);
 
     logger.info('AI response generated', {
-      jobId: job.id,
       conversationId: conversation.id,
       traceId,
       intent: aiResponse.intent,
       sentiment: aiResponse.sentiment,
+      responsePreview: aiResponse.response.substring(0, 50),
+      tokensUsed: aiResponse.tokens_used,
     });
 
     // Step 8: Store AI response in messages
@@ -146,7 +133,6 @@ export async function processMessageHandler(
 
     if (sendResult.status === 'failed') {
       logger.warn('Failed to send message immediately, queuing for retry', {
-        jobId: job.id,
         conversationId: conversation.id,
         traceId,
         error: sendResult.error,
@@ -180,7 +166,6 @@ export async function processMessageHandler(
     await ConversationRepository.updateLastMessageAt(conversation.id, new Date());
 
     logger.info('Message processed successfully', {
-      jobId: job.id,
       conversationId: conversation.id,
       traceId,
       responseMessageId: responseMessage.id,
@@ -194,15 +179,13 @@ export async function processMessageHandler(
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.error('Error processing message', {
-      jobId: job.id,
       phoneNumber,
       traceId,
       error: err.message,
       stack: err.stack,
-      attempt: job.attemptsMade + 1,
     });
 
-    // Don't throw - let Bull handle the retry
+    // Don't throw - let BullMQ handle the retry
     return {
       conversationId,
       messageProcessed: false,
@@ -212,18 +195,112 @@ export async function processMessageHandler(
 }
 
 /**
+ * Monta SaraContextPayload a partir da conversa
+ */
+async function buildSaraContext(
+  conversation: any,
+  phoneNumber: string,
+  traceId: string
+): Promise<SaraContextPayload> {
+  // 1. Buscar user
+  const user = await UserRepository.findById(conversation.user_id);
+  if (!user) {
+    throw new Error('User not found for conversation');
+  }
+
+  // 2. Buscar abandonment
+  const abandonment = conversation.abandonment_id
+    ? await AbandonmentRepository.findById(conversation.abandonment_id)
+    : null;
+  if (!abandonment) {
+    throw new Error('Abandonment not found for conversation');
+  }
+
+  // 3. Buscar histórico de mensagens (configurável via SARA_MESSAGE_HISTORY_LIMIT)
+  const messages = await MessageRepository.findByConversationId(
+    conversation.id,
+    SARA_CONFIG.message.historyLimit
+  );
+
+  // 4. Formatar histórico
+  const history = messages.map((msg: any) => ({
+    role: msg.sender_type === 'user' ? ('user' as const) : ('assistant' as const),
+    content: msg.message_text,
+    timestamp: msg.created_at.toISOString(),
+  }));
+
+  // 5. Buscar links de pagamento (original + desconto se existir)
+  // Por enquanto, usar placeholders - será preenchido pelo sistema de pagamento
+  const paymentConfig = {
+    originalLink: `https://pay.example.com/order/${abandonment.id}`,
+    discountLink: null as string | null,
+    discountPercent: null as number | null,
+    discountWasOffered: false,
+  };
+
+  // 6. Contar ciclos (controlado no BD)
+  const cycleCount = conversation.cycle_count || 0;
+
+  // 7. Montar payload
+  const context: SaraContextPayload = {
+    user: {
+      id: user.id,
+      name: user.name,
+      phone: phoneNumber,
+    },
+    abandonment: {
+      id: abandonment.id,
+      product: abandonment.product_id || 'Produto',
+      productId: abandonment.product_id || '',
+      cartValue: Math.round(abandonment.value * 100), // converter para centavos
+      currency: 'BRL',
+      createdAt: abandonment.created_at.toISOString(),
+    },
+    conversation: {
+      id: conversation.id,
+      state: conversation.state || 'ACTIVE',
+      cycleCount,
+      maxCycles: 5,
+      startedAt: conversation.created_at.toISOString(),
+    },
+    payment: paymentConfig,
+    history,
+    metadata: {
+      segment: user.segment || 'standard',
+      cartAgeMinutes: getMinutesSince(abandonment.created_at),
+    },
+  };
+
+  logger.debug('SARA context built', {
+    traceId,
+    userId: user.id,
+    userName: user.name,
+    cycleCount,
+    historyLength: history.length,
+  });
+
+  return context;
+}
+
+/**
+ * Calcula diferença de tempo em minutos
+ */
+function getMinutesSince(date: Date): number {
+  const now = new Date();
+  return Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+}
+
+/**
  * Handler for retrying failed message sends
  * Attempts to resend a message that previously failed
  */
-export async function sendMessageHandler(job: Job<SendMessagePayload>): Promise<SendMessageResult> {
-  const { conversationId, phoneNumber, messageText, traceId } = job.data;
+export async function sendMessageHandler(payload: SendMessagePayload): Promise<void> {
+  const { conversationId, phoneNumber, messageText, traceId } = payload;
 
   logger.info('Retrying message send', {
-    jobId: job.id,
     conversationId,
     phoneNumber,
     traceId,
-    attempt: job.attemptsMade + 1,
   });
 
   try {
@@ -234,54 +311,32 @@ export async function sendMessageHandler(job: Job<SendMessagePayload>): Promise<
 
     if (sendResult.status === 'sent') {
       logger.info('Message sent successfully on retry', {
-        jobId: job.id,
         conversationId,
         traceId,
-        attempt: job.attemptsMade + 1,
         whatsappMessageId: sendResult.whatsappMessageId,
       });
-
-      return {
-        conversationId,
-        messageId: '',
-        status: 'sent',
-        whatsappMessageId: sendResult.whatsappMessageId,
-      };
+      return;
     }
 
     logger.warn('Message send still failing on retry', {
-      jobId: job.id,
       conversationId,
       traceId,
-      attempt: job.attemptsMade + 1,
       error: sendResult.error,
     });
 
-    // Don't throw - let Bull handle the retry
-    return {
-      conversationId,
-      messageId: '',
-      status: 'failed',
-      error: sendResult.error,
-    };
+    // Throw to trigger BullMQ retry
+    throw new Error(`Failed to send message: ${sendResult.error}`);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.error('Error retrying message send', {
-      jobId: job.id,
       conversationId,
       traceId,
       error: err.message,
       stack: err.stack,
-      attempt: job.attemptsMade + 1,
     });
 
-    // Don't throw - let Bull handle the retry
-    return {
-      conversationId,
-      messageId: '',
-      status: 'failed',
-      error: err.message,
-    };
+    // Throw to trigger BullMQ retry
+    throw err;
   }
 }
 
@@ -310,6 +365,4 @@ export async function registerMessageHandlers(): Promise<void> {
     });
     throw error;
   }
-
-  logger.info('✅ All message handlers registered');
 }

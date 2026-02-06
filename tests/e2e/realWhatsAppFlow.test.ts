@@ -22,7 +22,8 @@ import type { FastifyInstance } from 'fastify';
 describe('E2E Real WhatsApp Message Flow (SARA-2.5)', () => {
   let server: FastifyInstance;
   const appSecret = process.env.WHATSAPP_APP_SECRET || 'test-secret';
-  const hasRealCredentials = !!process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_ACCESS_TOKEN.startsWith('EAAMLT');
+  const hasRealCredentials =
+    !!process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_ACCESS_TOKEN.startsWith('EAAMLT');
   const userPhone = '+5548999327881'; // Seu número
 
   beforeAll(async () => {
@@ -43,195 +44,181 @@ describe('E2E Real WhatsApp Message Flow (SARA-2.5)', () => {
   };
 
   describe('Complete Real Flow', () => {
-    it(
-      'should process real WhatsApp message with AI response and send via WhatsApp',
-      async () => {
-        if (!hasRealCredentials) {
-          console.log('\n⚠️  Skipping real test - credentials not configured');
-          return;
-        }
+    it('should process real WhatsApp message with AI response and send via WhatsApp', async () => {
+      if (!hasRealCredentials) {
+        console.log('\n⚠️  Skipping real test - credentials not configured');
+        return;
+      }
 
-        console.log('\n🚀 Starting E2E Real Message Flow Test');
-        console.log('=' .repeat(60));
+      console.log('\n🚀 Starting E2E Real Message Flow Test');
+      console.log('='.repeat(60));
 
-        // Step 1: Send abandonment webhook to create conversation
-        console.log('\n📨 Step 1: Disparando webhook de abandono...');
-        const userId = '123e4567-e89b-12d3-a456-426614174000'; // Valid UUID
-        const abandonmentPayload = {
-          userId,
-          name: 'Gregori Dalzotto',
-          phone: userPhone,
-          productId: 'prod-comando-ia',
-          value: 291.60,
-          paymentLink: 'https://go.reinoeducacao.com.br/subscribe/aqs-cmd-f01',
-          abandonmentId: `e2e-test-${Date.now()}`,
-          timestamp: Math.floor(Date.now() / 1000),
-        };
+      // Step 1: Send abandonment webhook to create conversation
+      console.log('\n📨 Step 1: Disparando webhook de abandono...');
+      const userId = '123e4567-e89b-12d3-a456-426614174000'; // Valid UUID
+      const abandonmentPayload = {
+        userId,
+        name: 'Gregori Dalzotto',
+        phone: userPhone,
+        productId: 'prod-comando-ia',
+        value: 291.6,
+        paymentLink: 'https://go.reinoeducacao.com.br/subscribe/aqs-cmd-f01',
+        abandonmentId: `e2e-test-${Date.now()}`,
+        timestamp: Math.floor(Date.now() / 1000),
+      };
 
-        const abandonmentSignature = createHmacSignature(JSON.stringify(abandonmentPayload));
+      const abandonmentSignature = createHmacSignature(JSON.stringify(abandonmentPayload));
 
-        const abandonmentResponse = await server.inject({
-          method: 'POST',
-          url: '/webhook/abandonment',
-          headers: {
-            'x-hub-signature-256': abandonmentSignature,
-            'content-type': 'application/json',
-          },
-          payload: abandonmentPayload,
-        });
+      const abandonmentResponse = await server.inject({
+        method: 'POST',
+        url: '/webhook/abandonment',
+        headers: {
+          'x-hub-signature-256': abandonmentSignature,
+          'content-type': 'application/json',
+        },
+        payload: abandonmentPayload,
+      });
 
-        console.log(`   Response status: ${abandonmentResponse.statusCode}`);
-        const abandonmentBody = JSON.parse(abandonmentResponse.body);
-        console.log(`   Abandonment created: ${abandonmentBody.abandonmentId}`);
-        console.log(`   Conversation created: ${abandonmentBody.conversationId}`);
+      console.log(`   Response status: ${abandonmentResponse.statusCode}`);
+      const abandonmentBody = JSON.parse(abandonmentResponse.body);
+      console.log(`   Abandonment created: ${abandonmentBody.abandonmentId}`);
+      console.log(`   Conversation created: ${abandonmentBody.conversationId}`);
 
-        expect(abandonmentResponse.statusCode).toBe(200);
-        expect(abandonmentBody.status).toMatch(/processed|already_processed/);
+      expect(abandonmentResponse.statusCode).toBe(200);
+      expect(abandonmentBody.status).toMatch(/processed|already_processed/);
 
-        // Small delay to ensure DB persistence
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // Small delay to ensure DB persistence
+      await new Promise((resolve) => setTimeout(resolve, 1000));
 
-        // Step 2: Send real WhatsApp message webhook
-        console.log('\n💬 Step 2: Disparando webhook de mensagem WhatsApp...');
-        const messagePayload = {
-          object: 'whatsapp_business_account',
-          entry: [
-            {
-              id: '123456789',
-              changes: [
-                {
-                  value: {
-                    messaging_product: 'whatsapp',
-                    metadata: {
-                      display_phone_number: '5548999327881',
-                      phone_number_id: process.env.WHATSAPP_PHONE_ID || '727258347143266',
-                    },
-                    messages: [
-                      {
-                        from: userPhone,
-                        id: `wamsg-e2e-${Date.now()}`,
-                        timestamp: String(Math.floor(Date.now() / 1000)),
-                        type: 'text',
-                        text: {
-                          body: 'Oi! Quero saber mais sobre o Comandor IA, ainda tem desconto?',
-                        },
-                      },
-                    ],
+      // Step 2: Send real WhatsApp message webhook
+      console.log('\n💬 Step 2: Disparando webhook de mensagem WhatsApp...');
+      const messagePayload = {
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            id: '123456789',
+            changes: [
+              {
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: {
+                    display_phone_number: '5548999327881',
+                    phone_number_id: process.env.WHATSAPP_PHONE_ID || '727258347143266',
                   },
-                  field: 'messages',
+                  messages: [
+                    {
+                      from: userPhone,
+                      id: `wamsg-e2e-${Date.now()}`,
+                      timestamp: String(Math.floor(Date.now() / 1000)),
+                      type: 'text',
+                      text: {
+                        body: 'Oi! Quero saber mais sobre o Comandor IA, ainda tem desconto?',
+                      },
+                    },
+                  ],
                 },
-              ],
-            },
-          ],
-        };
-
-        const messagePayloadStr = JSON.stringify(messagePayload);
-        const messageSignature = createHmacSignature(messagePayloadStr);
-
-        const startTime = Date.now();
-        console.log(`   Enviando mensagem de teste...`);
-
-        const messageResponse = await server.inject({
-          method: 'POST',
-          url: '/webhook/messages',
-          headers: {
-            'x-hub-signature-256': messageSignature,
-            'content-type': 'application/json',
+                field: 'messages',
+              },
+            ],
           },
-          payload: messagePayload,
-        });
+        ],
+      };
 
-        console.log(`   Webhook response status: ${messageResponse.statusCode}`);
-        const messageBody = JSON.parse(messageResponse.body);
-        console.log(`   Message queued: ${messageBody.status}`);
+      const messagePayloadStr = JSON.stringify(messagePayload);
+      const messageSignature = createHmacSignature(messagePayloadStr);
 
-        expect(messageResponse.statusCode).toBe(200);
-        expect(messageBody.status).toBe('received');
+      const startTime = Date.now();
+      console.log(`   Enviando mensagem de teste...`);
 
-        // Step 3: Wait for processing
-        console.log('\n⏳ Step 3: Aguardando processamento assíncrono...');
-        console.log('   Processando: Conversation → AIService → MessageService → WhatsApp');
+      const messageResponse = await server.inject({
+        method: 'POST',
+        url: '/webhook/messages',
+        headers: {
+          'x-hub-signature-256': messageSignature,
+          'content-type': 'application/json',
+        },
+        payload: messagePayload,
+      });
 
-        // Bull queue processing time (typically 1-5 seconds + API calls)
-        // OpenAI response time: 1-10 seconds
-        // WhatsApp send time: 1-5 seconds
-        const processingTime = 15000; // 15 segundos para ser seguro
-        console.log(`   Aguardando ${processingTime / 1000}s para processamento...`);
+      console.log(`   Webhook response status: ${messageResponse.statusCode}`);
+      const messageBody = JSON.parse(messageResponse.body);
+      console.log(`   Message queued: ${messageBody.status}`);
 
-        await new Promise(resolve => setTimeout(resolve, processingTime));
+      expect(messageResponse.statusCode).toBe(200);
+      expect(messageBody.status).toBe('received');
 
-        const duration = Date.now() - startTime;
-        console.log(`   Tempo total: ${(duration / 1000).toFixed(2)}s`);
+      // Step 3: Wait for processing
+      console.log('\n⏳ Step 3: Aguardando processamento assíncrono...');
+      console.log('   Processando: Conversation → AIService → MessageService → WhatsApp');
 
-        // Step 4: Verify message was processed
-        console.log('\n✅ Step 4: Verificação');
-        console.log('   Verificando se a mensagem foi processada...');
-        console.log(`   ✓ Webhook aceito: ${messageResponse.statusCode === 200}`);
-        console.log(`   ✓ Fila processou o job`);
-        console.log(`   ✓ AIService foi chamado (OpenAI)`);
-        console.log(`   ✓ MessageService enviou via WhatsApp`);
+      // Bull queue processing time (typically 1-5 seconds + API calls)
+      // OpenAI response time: 1-10 seconds
+      // WhatsApp send time: 1-5 seconds
+      const processingTime = 15000; // 15 segundos para ser seguro
+      console.log(`   Aguardando ${processingTime / 1000}s para processamento...`);
 
-        console.log('\n📱 RESULTADO ESPERADO:');
-        console.log(`   Você deve receber uma mensagem no WhatsApp ${userPhone}`);
-        console.log('   A mensagem será uma resposta gerada por IA sobre o Comandor');
-        console.log('   Conteúdo: resposta personalizada baseada em seu carrinho (R$ 291,60)');
+      await new Promise((resolve) => setTimeout(resolve, processingTime));
 
-        console.log('\n' + '='.repeat(60));
-        console.log('✅ E2E Test Completed Successfully!');
-        console.log('   Check your WhatsApp for the AI response message');
-      },
-      60000 // 60 segundo timeout para este teste
-    );
+      const duration = Date.now() - startTime;
+      console.log(`   Tempo total: ${(duration / 1000).toFixed(2)}s`);
 
-    it(
-      'should handle user replying to AI message (conversation continuation)',
-      async () => {
-        if (!hasRealCredentials) {
-          console.log('\n⚠️  Skipping real test - credentials not configured');
-          return;
-        }
+      // Step 4: Verify message was processed
+      console.log('\n✅ Step 4: Verificação');
+      console.log('   Verificando se a mensagem foi processada...');
+      console.log(`   ✓ Webhook aceito: ${messageResponse.statusCode === 200}`);
+      console.log(`   ✓ Fila processou o job`);
+      console.log(`   ✓ AIService foi chamado (OpenAI)`);
+      console.log(`   ✓ MessageService enviou via WhatsApp`);
 
-        console.log('\n🔄 Testing conversation continuation...');
-        console.log('Você pode responder a mensagem recebida no WhatsApp');
-        console.log('E ela será processada novamente pelo pipeline completo');
-        console.log('(Este é um teste documentação - execução real depende de mensagem real do usuário)');
-      },
-      30000
-    );
+      console.log('\n📱 RESULTADO ESPERADO:');
+      console.log(`   Você deve receber uma mensagem no WhatsApp ${userPhone}`);
+      console.log('   A mensagem será uma resposta gerada por IA sobre o Comandor');
+      console.log('   Conteúdo: resposta personalizada baseada em seu carrinho (R$ 291,60)');
+
+      console.log('\n' + '='.repeat(60));
+      console.log('✅ E2E Test Completed Successfully!');
+      console.log('   Check your WhatsApp for the AI response message');
+    }, 60000); // 60 segundo timeout para este teste
+
+    it('should handle user replying to AI message (conversation continuation)', async () => {
+      if (!hasRealCredentials) {
+        console.log('\n⚠️  Skipping real test - credentials not configured');
+        return;
+      }
+
+      console.log('\n🔄 Testing conversation continuation...');
+      console.log('Você pode responder a mensagem recebida no WhatsApp');
+      console.log('E ela será processada novamente pelo pipeline completo');
+      console.log(
+        '(Este é um teste documentação - execução real depende de mensagem real do usuário)'
+      );
+    }, 30000);
   });
 
   describe('Error Scenarios', () => {
-    it(
-      'should handle rate limiting gracefully',
-      async () => {
-        if (!hasRealCredentials) {
-          return;
-        }
+    it('should handle rate limiting gracefully', async () => {
+      if (!hasRealCredentials) {
+        return;
+      }
 
-        console.log('\n⚠️  Rate limit test: Se receber muitas mensagens rápidas');
-        console.log('   MessageService vai tentar 3 vezes com backoff exponencial');
-        console.log('   1º tentativa: imediato');
-        console.log('   2º tentativa: após 1s');
-        console.log('   3º tentativa: após 2s');
-        console.log('   Se falhar 3x: job fica em "failed" queue para retry manual');
-      },
-      30000
-    );
+      console.log('\n⚠️  Rate limit test: Se receber muitas mensagens rápidas');
+      console.log('   MessageService vai tentar 3 vezes com backoff exponencial');
+      console.log('   1º tentativa: imediato');
+      console.log('   2º tentativa: após 1s');
+      console.log('   3º tentativa: após 2s');
+      console.log('   Se falhar 3x: job fica em "failed" queue para retry manual');
+    }, 30000);
 
-    it(
-      'should handle OpenAI timeouts',
-      async () => {
-        if (!hasRealCredentials) {
-          return;
-        }
+    it('should handle OpenAI timeouts', async () => {
+      if (!hasRealCredentials) {
+        return;
+      }
 
-        console.log('\n⏱️  Timeout test: Se OpenAI demorasse muito');
-        console.log('   AIService tem timeout de 5 segundos');
-        console.log('   Se exceder: retorna fallback "Um momento enquanto avalio..."');
-        console.log('   Mensagem é enviada mesmo assim');
-      },
-      30000
-    );
+      console.log('\n⏱️  Timeout test: Se OpenAI demorasse muito');
+      console.log('   AIService tem timeout de 5 segundos');
+      console.log('   Se exceder: retorna fallback "Um momento enquanto avalio..."');
+      console.log('   Mensagem é enviada mesmo assim');
+    }, 30000);
   });
 
   describe('Documentation: Architecture Validated', () => {

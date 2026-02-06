@@ -1,15 +1,20 @@
 import { FastifyInstance } from 'fastify';
+import { createHmac } from 'crypto';
 import { config } from '../config/env';
 import logger from '../config/logger';
 import { createValidationError, createUnauthorizedError } from '../utils/errors';
 import { FastifyRequestWithTrace } from '../middleware/correlationId';
 import { FastifyRequestWithRawBody } from '../middleware/rawBodyCapture';
 import { createRateLimiterMiddleware } from '../middleware/rateLimiter';
+import { createWebhookRateLimiter } from '../middleware/rateLimiterRedis';
 import { AbandonmentWebhookSchema } from '../types/schemas';
 import { AbandonmentService } from '../services/AbandonmentService';
 import { MessageService } from '../services/MessageService';
 import ProcessMessageQueue from '../jobs/processMessageJob';
 import { ConversationService } from '../services/ConversationService';
+import { UserRepository } from '../repositories/UserRepository';
+import { ConversationRepository } from '../repositories/ConversationRepository';
+import { AbandonmentRepository } from '../repositories/AbandonmentRepository';
 
 /**
  * GET /webhook/messages
@@ -173,143 +178,153 @@ function extractMessageData(payload: unknown, traceId: string): MetaMessagePaylo
  * POST /webhook/messages
  * Receives messages from users via WhatsApp
  * Verifies signature, deduplicates, and enqueues for async processing
+ * Rate limited: 10 requests per 15 minutes per phone number
  */
 export async function postWebhookMessages(fastify: FastifyInstance): Promise<void> {
-  fastify.post<{ Body: Record<string, unknown> }>('/webhook/messages', async (request, reply) => {
-    const traceId = (request as FastifyRequestWithTrace).traceId;
+  fastify.post<{ Body: Record<string, unknown> }>(
+    '/webhook/messages',
+    { preHandler: createWebhookRateLimiter() },
+    async (request, reply) => {
+      const traceId = (request as FastifyRequestWithTrace).traceId;
 
-    try {
-      logger.info('Webhook message received', {
-        traceId,
-        contentType: request.headers['content-type'],
-      });
-
-      // Step 1: Verify HMAC signature
-      const signature = request.headers['x-hub-signature-256'] as string | undefined;
-
-      // Usar rawBody capturado pela middleware, senão fazer fallback para JSON.stringify
-      const requestWithRawBody = request as FastifyRequestWithRawBody;
-      const rawBody = requestWithRawBody.rawBody || JSON.stringify(request.body);
-
-      if (!verifyWebhookSignature(rawBody, signature, traceId)) {
-        logger.warn('Invalid webhook signature', {
+      try {
+        logger.info('Webhook message received', {
           traceId,
-          hasSignature: !!signature,
+          contentType: request.headers['content-type'],
         });
 
-        throw createUnauthorizedError('Invalid webhook signature', traceId);
-      }
+        // Step 1: Verify HMAC signature
+        const signature = request.headers['x-hub-signature-256'] as string | undefined;
 
-      logger.debug('Webhook signature verified', { traceId });
+        // Usar rawBody capturado pela middleware, senão fazer fallback para JSON.stringify
+        const requestWithRawBody = request as FastifyRequestWithRawBody;
+        const rawBody = requestWithRawBody.rawBody || JSON.stringify(request.body);
 
-      // Step 2: Extract message data from Meta payload
-      const messagePayload = extractMessageData(request.body, traceId);
-
-      if (!messagePayload) {
-        logger.warn('Failed to extract message data from payload', { traceId });
-
-        // Return 200 OK to avoid Meta retries for malformed data
-        return reply.code(200).send({ status: 'skipped', reason: 'Invalid payload structure' });
-      }
-
-      logger.debug('Message payload extracted', {
-        traceId,
-        messageCount: messagePayload.messages?.length || 0,
-      });
-
-      // Step 3: Process each message (usually only 1)
-      for (const message of messagePayload.messages || []) {
-        if (message.type !== 'text' || !message.text) {
-          logger.debug('Skipping non-text message', {
+        if (!verifyWebhookSignature(rawBody, signature, traceId)) {
+          logger.warn('Invalid webhook signature', {
             traceId,
-            messageId: message.id,
-            type: message.type,
+            hasSignature: !!signature,
           });
-          continue;
+
+          throw createUnauthorizedError('Invalid webhook signature', traceId);
         }
 
-        const phoneNumber = message.from;
-        const messageText = message.text.body;
-        const whatsappMessageId = message.id;
+        logger.debug('Webhook signature verified', { traceId });
 
-        logger.info('Processing WhatsApp message', {
+        // Step 2: Extract message data from Meta payload
+        const messagePayload = extractMessageData(request.body, traceId);
+
+        if (!messagePayload) {
+          logger.warn('Failed to extract message data from payload', { traceId });
+
+          // Return 200 OK to avoid Meta retries for malformed data
+          return reply.code(200).send({ status: 'skipped', reason: 'Invalid payload structure' });
+        }
+
+        logger.debug('Message payload extracted', {
           traceId,
-          whatsappMessageId,
-          phoneNumber,
-          messageLength: messageText.length,
+          messageCount: messagePayload.messages?.length || 0,
         });
 
-        try {
-          // Step 4: Load or create conversation
-          const conversation = await ConversationService.findByPhoneNumber(phoneNumber, traceId);
-
-          if (!conversation) {
-            logger.warn('Conversation not found for phone number', {
+        // Step 3: Process each message (usually only 1)
+        for (const message of messagePayload.messages || []) {
+          if (message.type !== 'text' || !message.text) {
+            logger.debug('Skipping non-text message', {
               traceId,
-              phoneNumber,
+              messageId: message.id,
+              type: message.type,
             });
-
-            // Return 200 OK (conversation should exist from abandonment webhook)
-            return reply.code(200).send({
-              status: 'skipped',
-              reason: 'Conversation not found for phone number',
-            });
+            continue;
           }
 
-          const conversationId = conversation.id;
+          let phoneNumber = message.from;
+          const messageText = message.text.body;
+          const whatsappMessageId = message.id;
 
-          // Step 5: Enqueue message for async processing
-          await ProcessMessageQueue.addJob({
-            conversationId,
-            whatsappMessageId,
-            phoneNumber,
-            messageText,
-            traceId,
-          });
+          // Normalize phone number to E.164 format (+country code + number)
+          if (!phoneNumber.startsWith('+')) {
+            phoneNumber = '+' + phoneNumber;
+          }
 
-          logger.info('Message enqueued for processing', {
-            traceId,
-            conversationId,
-            whatsappMessageId,
-          });
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-
-          logger.error('Error processing message from webhook', {
+          logger.info('Processing WhatsApp message', {
             traceId,
             whatsappMessageId,
             phoneNumber,
-            error: errorMessage,
+            messageLength: messageText.length,
           });
 
-          // Continue processing other messages, don't fail the webhook response
+          try {
+            // Step 4: Load or create conversation
+            const conversation = await ConversationService.findByPhoneNumber(phoneNumber, traceId);
+
+            if (!conversation) {
+              logger.warn('Conversation not found for phone number', {
+                traceId,
+                phoneNumber,
+              });
+
+              // Return 200 OK (conversation should exist from abandonment webhook)
+              return reply.code(200).send({
+                status: 'skipped',
+                reason: 'Conversation not found for phone number',
+              });
+            }
+
+            const conversationId = conversation.id;
+
+            // Step 5: Enqueue message for async processing
+            await ProcessMessageQueue.addJob({
+              conversationId,
+              whatsappMessageId,
+              phoneNumber,
+              messageText,
+              traceId,
+            });
+
+            logger.info('Message enqueued for processing', {
+              traceId,
+              conversationId,
+              whatsappMessageId,
+            });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+
+            logger.error('Error processing message from webhook', {
+              traceId,
+              whatsappMessageId,
+              phoneNumber,
+              error: errorMessage,
+            });
+
+            // Continue processing other messages, don't fail the webhook response
+          }
+        }
+
+        // Step 6: Return 200 OK immediately (Meta expects this within 5 seconds)
+        logger.debug('Webhook processing completed, returning 200 OK', { traceId });
+
+        reply.code(200).send({
+          status: 'received',
+          messagesProcessed: messagePayload.messages?.length || 0,
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        logger.error('Error processing webhook', {
+          traceId,
+          error: errorMessage,
+        });
+
+        // Return 200 OK for all errors (Meta should retry, or check logs)
+        // Exceptions are only for auth failures
+        if (error instanceof Error && error.message.includes('signature')) {
+          reply.code(403).send({ status: 'forbidden', reason: 'Invalid signature' });
+        } else {
+          reply.code(200).send({ status: 'error', reason: errorMessage });
         }
       }
-
-      // Step 6: Return 200 OK immediately (Meta expects this within 5 seconds)
-      logger.debug('Webhook processing completed, returning 200 OK', { traceId });
-
-      reply.code(200).send({
-        status: 'received',
-        messagesProcessed: messagePayload.messages?.length || 0,
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      logger.error('Error processing webhook', {
-        traceId,
-        error: errorMessage,
-      });
-
-      // Return 200 OK for all errors (Meta should retry, or check logs)
-      // Exceptions are only for auth failures
-      if (error instanceof Error && error.message.includes('signature')) {
-        reply.code(403).send({ status: 'forbidden', reason: 'Invalid signature' });
-      } else {
-        reply.code(200).send({ status: 'error', reason: errorMessage });
-      }
     }
-  });
+  );
 }
 
 /**
@@ -372,6 +387,230 @@ export async function postWebhookAbandonment(fastify: FastifyInstance): Promise<
 }
 
 /**
+ * POST /webhook/debug
+ * Debug endpoint to validate HMAC signatures
+ * Helps identify webhook validation issues
+ */
+export async function postWebhookDebug(fastify: FastifyInstance): Promise<void> {
+  fastify.post<{ Body: Record<string, unknown> }>('/webhook/debug', async (request, reply) => {
+    const traceId = (request as FastifyRequestWithTrace).traceId;
+
+    try {
+      const signatureHeader = request.headers['x-hub-signature-256'] as string | undefined;
+      const requestWithRawBody = request as FastifyRequestWithRawBody;
+      const rawBody = requestWithRawBody.rawBody || JSON.stringify(request.body);
+
+      // Calculate expected signature
+      const secret = process.env.WHATSAPP_APP_SECRET || '';
+      const expectedSignature = signatureHeader
+        ? createHmac('sha256', secret).update(rawBody).digest('hex')
+        : 'N/A';
+
+      // Extract received signature
+      const receivedSignature = signatureHeader ? signatureHeader.split('=')[1] : 'NOT PROVIDED';
+
+      // Compare
+      const signatureMatch =
+        signatureHeader &&
+        receivedSignature &&
+        Buffer.byteLength(receivedSignature) === Buffer.byteLength(expectedSignature) &&
+        receivedSignature === expectedSignature;
+
+      const debugInfo = {
+        timestamp: new Date().toISOString(),
+        traceId,
+        webhook: {
+          method: request.method,
+          path: request.url,
+          contentType: request.headers['content-type'],
+        },
+        signature: {
+          headerPresent: !!signatureHeader,
+          headerValue: signatureHeader || 'NOT PROVIDED',
+          received: receivedSignature,
+          expected: expectedSignature,
+          match: signatureMatch,
+          matchPercentage:
+            receivedSignature === expectedSignature ? '✅ 100% Match' : '❌ Mismatch',
+        },
+        body: {
+          rawLength: Buffer.byteLength(rawBody),
+          preview: rawBody.substring(0, 200),
+          fullBody: rawBody,
+        },
+        security: {
+          secretFirstChars: secret.substring(0, 10) + '...',
+          secretLength: secret.length,
+        },
+        analysis: {
+          hasSignatureHeader: !!signatureHeader,
+          isValidFormat: !!signatureHeader?.includes('sha256='),
+          bodyIsValid: rawBody.length > 0,
+          secretConfigured: secret.length > 0,
+        },
+      };
+
+      // Log for debugging
+      logger.info('Webhook debug request received', {
+        traceId,
+        signatureMatch,
+        bodyLength: debugInfo.body.rawLength,
+      });
+
+      return reply.code(200).send(debugInfo);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      logger.error('Error in webhook debug endpoint', {
+        traceId,
+        error: errorMessage,
+      });
+
+      return reply.code(200).send({
+        error: errorMessage,
+        timestamp: new Date().toISOString(),
+        traceId,
+      });
+    }
+  });
+}
+
+/**
+ * POST /webhook/test/setup-scenario
+ * Setup test scenario with Meta test user
+ * Creates user, abandonment, conversation and simulates template sent
+ */
+async function setupTestScenario(fastify: FastifyInstance): Promise<void> {
+  fastify.post<{
+    Body: {
+      phoneNumber?: string;
+      productName?: string;
+      cartValue?: number;
+      discountPercent?: number;
+    };
+  }>('/webhook/test/setup-scenario', async (request, reply) => {
+    const traceId = (request as FastifyRequestWithTrace).traceId;
+
+    const {
+      phoneNumber = '+16315551181',
+      productName = 'Curso Python Avançado',
+      cartValue = 150.0,
+      discountPercent = 15,
+    } = request.body;
+
+    try {
+      logger.info('Setting up test scenario', {
+        traceId,
+        phoneNumber,
+        productName,
+        cartValue,
+      });
+
+      // 1. Create/get user
+      const userId = await UserRepository.upsert(phoneNumber, 'Meta Test User');
+      const user = await UserRepository.findById(userId);
+      if (!user) {
+        throw new Error('Failed to create user');
+      }
+
+      // 2. Create/get product (using raw SQL via database)
+      const productId = `test-product-${Date.now()}`;
+      const paymentLink = `https://pay.example.com/test-${Date.now()}`;
+      const discountLink = `https://pay.example.com/test-${Date.now()}?discount=${discountPercent}`;
+
+      // 3. Create abandonment
+      const externalId = `test_${Date.now()}`;
+
+      const abandonment = await AbandonmentRepository.create(
+        user.id,
+        externalId,
+        productId,
+        cartValue,
+        paymentLink
+      );
+
+      if (!abandonment) {
+        throw new Error('Failed to create abandonment');
+      }
+
+      // 4. Create conversation
+      const conversation = await ConversationRepository.create(abandonment.id, user.id);
+
+      if (!conversation) {
+        throw new Error('Failed to create conversation');
+      }
+
+      const scenario = {
+        user: {
+          id: user.id,
+          phoneNumber,
+          name: user.name,
+        },
+        product: {
+          id: productId,
+          name: productName,
+          value: cartValue,
+          discountPercent,
+          paymentLink,
+          discountLink,
+        },
+        abandonment: {
+          id: abandonment.id,
+          externalId: abandonment.external_id,
+          status: abandonment.status,
+        },
+        conversation: {
+          id: conversation.id,
+          status: conversation.status,
+          cycleCount: conversation.cycle_count || 0,
+          maxCycles: 5,
+        },
+        instructions: {
+          step1: `Você tem 1 minuto para responder ao WhatsApp de ${phoneNumber}`,
+          step2: 'SARA vai receber sua resposta via webhook',
+          step3: 'SARA vai gerar resposta com contexto dinâmico:',
+          details: [
+            '- Nome do usuário',
+            `- Valor do carrinho (R$ ${cartValue.toFixed(2)})`,
+            '- Histórico de mensagens',
+            `- Opção de desconto (${discountPercent}%)`,
+            '- Ciclo atual da conversa (0/5)',
+          ],
+        },
+      };
+
+      logger.info('Test scenario created successfully', {
+        traceId,
+        conversationId: conversation.id,
+        abandonment: abandonment.id,
+      });
+
+      return reply.code(200).send({
+        status: 'success',
+        message: 'Cenário de teste criado! Aguardando sua resposta no WhatsApp...',
+        scenario,
+        timestamp: new Date().toISOString(),
+        traceId,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      logger.error('Error setting up test scenario', {
+        traceId,
+        phoneNumber,
+        error: errorMessage,
+      });
+
+      return reply.code(400).send({
+        error: errorMessage,
+        timestamp: new Date().toISOString(),
+        traceId,
+      });
+    }
+  });
+}
+
+/**
  * Register all webhook routes
  */
 export async function registerWebhookRoutes(fastify: FastifyInstance): Promise<void> {
@@ -385,6 +624,8 @@ export async function registerWebhookRoutes(fastify: FastifyInstance): Promise<v
   await getWebhookMessages(fastify);
   await postWebhookMessages(fastify);
   await postWebhookAbandonment(fastify);
+  await postWebhookDebug(fastify);
+  await setupTestScenario(fastify);
 
   logger.info('Webhook routes registered');
 }

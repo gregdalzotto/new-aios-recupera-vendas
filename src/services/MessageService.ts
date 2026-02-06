@@ -29,7 +29,7 @@ export interface SendResult {
  */
 export class MessageService {
   private static readonly WHATSAPP_API_VERSION = 'v18.0';
-  private static readonly WHATSAPP_API_HOST = 'https://graph.instagram.com';
+  private static readonly WHATSAPP_API_HOST = 'https://graph.facebook.com';
   private static readonly E164_PHONE_REGEX = /^\+?[1-9]\d{1,14}$/;
   private static readonly MAX_MESSAGE_LENGTH = 4096;
 

@@ -8,6 +8,8 @@ import { captureRawBodyMiddleware } from './middleware/rawBodyCapture';
 import { AppError } from './utils/errors';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerMessageHandlers } from './jobs/handlers';
+import ProcessMessageQueue from './jobs/processMessageJob';
+import SendMessageQueue from './jobs/sendMessageJob';
 
 let startTime: number;
 
@@ -33,17 +35,49 @@ export async function createServer(): Promise<Server> {
   // Register webhook routes
   await registerWebhookRoutes(server);
 
-  // Register job message handlers
-  // TODO: Fix Bull/Redis compatibility issue - temporarily disabled
+  // Register job message handlers (now using BullMQ - no Lua script issues)
   try {
-    // await registerMessageHandlers();
-    logger.warn('⚠️  Message handlers temporarily disabled (Bull/Redis compatibility)');
+    await registerMessageHandlers();
+    logger.info('✅ Message handlers registered successfully (BullMQ)');
   } catch (error) {
     logger.error('Failed to register message handlers', {
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
+
+  // Queue stats endpoint (for monitoring)
+  server.get('/queue-stats', async (_request, _reply) => {
+    try {
+      const [processStats, sendStats] = await Promise.all([
+        ProcessMessageQueue.getStats(),
+        SendMessageQueue.getStats(),
+      ]);
+
+      return {
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        queues: {
+          processMessage: {
+            name: 'process-message',
+            ...processStats,
+          },
+          sendMessage: {
+            name: 'send-message',
+            ...sendStats,
+          },
+        },
+      };
+    } catch (error) {
+      logger.error('Error fetching queue stats', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        status: 'error',
+        error: 'Failed to fetch queue stats',
+      };
+    }
+  });
 
   // Health check endpoint
   server.get<{

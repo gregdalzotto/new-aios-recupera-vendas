@@ -1,6 +1,5 @@
-import Bull from 'bull';
-import type { Queue, Job } from 'bull';
-import { getRedisClient } from '../config/redis';
+import { Queue, Worker, QueueEvents } from 'bullmq';
+import { config } from '../config/env';
 import logger from '../config/logger';
 
 /**
@@ -17,62 +16,59 @@ export interface SendMessagePayload {
 }
 
 /**
- * Job result/response
- */
-export interface SendMessageResult {
-  conversationId: string;
-  messageId: string;
-  status: 'sent' | 'failed';
-  whatsappMessageId?: string;
-  error?: string;
-}
-
-/**
- * Send Message Queue for handling outgoing WhatsApp messages asynchronously
- * Uses Bull with Redis backend for reliability and retry logic
+ * Send Message Queue for handling message sending with retry
+ * Uses BullMQ with Redis backend
  */
 class SendMessageQueue {
   private static instance: Queue<SendMessagePayload>;
+  private static worker: Worker<SendMessagePayload> | null = null;
+  private static queueEvents: QueueEvents | null = null;
 
   /**
    * Get or create the queue singleton
    */
   static async getInstance(): Promise<Queue<SendMessagePayload>> {
     if (!this.instance) {
-      const redis = await getRedisClient();
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.instance = new Bull('send-message', {
-        createClient: () => redis,
-      }) as Queue<SendMessagePayload>;
+      this.instance = new Queue<SendMessagePayload>('send-message', {
+        connection: config.REDIS_CONFIG,
+      });
 
       // Configure queue event listeners
-      this.instance.on('completed', (job: Job<SendMessagePayload>) => {
-        logger.debug('Message sending job completed', {
-          jobId: job.id,
-          conversationId: job.data.conversationId,
-          traceId: job.data.traceId,
-        });
-      });
-
-      this.instance.on('failed', (job: Job<SendMessagePayload>, err) => {
-        logger.error('Message sending job failed', {
-          jobId: job.id,
-          conversationId: job.data.conversationId,
-          traceId: job.data.traceId,
-          attempt: job.attemptsMade,
-          error: err.message,
-        });
-      });
-
-      this.instance.on('error', (err) => {
-        logger.error('Send message queue error', { error: err.message });
-      });
+      this.setupEventListeners();
 
       logger.info('Send Message Queue initialized');
     }
 
     return this.instance;
+  }
+
+  /**
+   * Setup event listeners for queue
+   */
+  private static setupEventListeners(): void {
+    if (!this.instance) return;
+
+    this.queueEvents = new QueueEvents('send-message', {
+      connection: config.REDIS_CONFIG,
+    });
+
+    this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
+      logger.debug('Message sending job completed', {
+        jobId,
+        result: returnvalue,
+      });
+    });
+
+    this.queueEvents.on('failed', ({ jobId, failedReason }) => {
+      logger.error('Message sending job failed', {
+        jobId,
+        error: failedReason,
+      });
+    });
+
+    this.queueEvents.on('error', (error) => {
+      logger.error('Send message queue error', { error: error.message });
+    });
   }
 
   /**
@@ -85,17 +81,17 @@ class SendMessageQueue {
       delay?: number;
       attempts?: number;
     }
-  ): Promise<Job<SendMessagePayload>> {
+  ) {
     const queue = await this.getInstance();
 
-    return queue.add(payload, {
-      attempts: options?.attempts || 3,
+    return queue.add('send-message', payload, {
+      attempts: options?.attempts || 5,
       backoff: {
         type: 'exponential',
         delay: 1000, // Start with 1 second
       },
-      removeOnComplete: true, // Clean up completed jobs
-      removeOnFail: false, // Keep failed jobs for debugging
+      removeOnComplete: true,
+      removeOnFail: false,
       priority: options?.priority || 0,
       delay: options?.delay || 0,
     });
@@ -105,6 +101,16 @@ class SendMessageQueue {
    * Close the queue (for graceful shutdown)
    */
   static async close(): Promise<void> {
+    if (this.worker) {
+      await this.worker.close();
+      logger.info('Send Message Worker closed');
+    }
+
+    if (this.queueEvents) {
+      await this.queueEvents.close();
+      logger.info('Send Message Queue Events closed');
+    }
+
     if (this.instance) {
       await this.instance.close();
       logger.info('Send Message Queue closed');
@@ -113,22 +119,35 @@ class SendMessageQueue {
 
   /**
    * Register job handler
-   * This should be called during application startup
    */
   static async registerHandler(
-    handler: (job: Job<SendMessagePayload>) => Promise<SendMessageResult>
+    handler: (payload: SendMessagePayload) => Promise<void>
   ): Promise<void> {
-    const queue = await this.getInstance();
+    await this.getInstance(); // Ensure queue is initialized
 
-    queue.process(async (job: Job<SendMessagePayload>) => {
-      logger.debug('Processing message sending job', {
-        jobId: job.id,
-        conversationId: job.data.conversationId,
-        traceId: job.data.traceId,
-      });
+    this.worker = new Worker<SendMessagePayload>(
+      'send-message',
+      async (job) => {
+        logger.debug('Sending message job', {
+          jobId: job.id,
+          conversationId: job.data.conversationId,
+          phoneNumber: job.data.phoneNumber,
+          traceId: job.data.traceId,
+        });
 
-      return handler(job);
+        await handler(job.data);
+      },
+      {
+        connection: config.REDIS_CONFIG,
+        concurrency: 10, // Process up to 10 send jobs concurrently
+      }
+    );
+
+    this.worker.on('error', (error) => {
+      logger.error('Send message worker error', { error: error.message });
     });
+
+    logger.info('Message send handler registered');
   }
 
   /**
@@ -143,15 +162,15 @@ class SendMessageQueue {
   }> {
     const queue = await this.getInstance();
 
-    const [waiting, active, completed, failed, delayed] = await Promise.all([
-      queue.getWaitingCount(),
-      queue.getActiveCount(),
-      queue.getCompletedCount(),
-      queue.getFailedCount(),
-      queue.getDelayedCount(),
-    ]);
+    const counts = await queue.getJobCounts('wait', 'active', 'completed', 'failed', 'delayed');
 
-    return { waiting, active, completed, failed, delayed };
+    return {
+      waiting: counts.wait,
+      active: counts.active,
+      completed: counts.completed,
+      failed: counts.failed,
+      delayed: counts.delayed,
+    };
   }
 }
 

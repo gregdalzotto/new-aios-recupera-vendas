@@ -26,6 +26,11 @@ export async function hmacVerificationMiddleware(
     return;
   }
 
+  // Pula validação para /webhook/debug (permitir testar com signatures inválidas)
+  if (request.url === '/webhook/debug') {
+    return;
+  }
+
   const signatureHeader = request.headers['x-hub-signature-256'] as string;
   const traceId = (request as FastifyRequestWithTrace).traceId;
 
@@ -74,7 +79,13 @@ export async function hmacVerificationMiddleware(
       method: request.method,
       url: request.url,
       ip: request.ip,
-      headerSignature: headerSignature?.substring(0, 10) + '...',
+      headerSignature: headerSignature?.substring(0, 20) + '...',
+      expectedSignature: expectedSignature.substring(0, 20) + '...',
+      headerLength: headerSignature?.length,
+      expectedLength: expectedSignature.length,
+      bodyLength: Buffer.byteLength(bodyStr),
+      bodyPreview: bodyStr.substring(0, 100),
+      secret: process.env.WHATSAPP_APP_SECRET?.substring(0, 10) + '...',
     });
 
     throw createHmacError('Invalid HMAC signature', traceId);
