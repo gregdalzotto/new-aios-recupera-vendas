@@ -4,6 +4,7 @@ import logger from './config/logger';
 import { HealthCheckResponse, Server } from './types/index';
 import { correlationIdMiddleware } from './middleware/correlationId';
 import { hmacVerificationMiddleware } from './middleware/hmacVerification';
+import { captureRawBodyMiddleware } from './middleware/rawBodyCapture';
 import { AppError } from './utils/errors';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerMessageHandlers } from './jobs/handlers';
@@ -22,6 +23,9 @@ export async function createServer(): Promise<Server> {
     origin: true,
   });
 
+  // Capture raw body BEFORE JSON parsing (for webhook HMAC validation)
+  await captureRawBodyMiddleware(server);
+
   // Register middleware in order: correlationId → hmacVerification
   server.addHook('preHandler', correlationIdMiddleware);
   server.addHook('preHandler', hmacVerificationMiddleware);
@@ -30,9 +34,10 @@ export async function createServer(): Promise<Server> {
   await registerWebhookRoutes(server);
 
   // Register job message handlers
+  // TODO: Fix Bull/Redis compatibility issue - temporarily disabled
   try {
-    await registerMessageHandlers();
-    logger.info('✅ Message handlers registered');
+    // await registerMessageHandlers();
+    logger.warn('⚠️  Message handlers temporarily disabled (Bull/Redis compatibility)');
   } catch (error) {
     logger.error('Failed to register message handlers', {
       error: error instanceof Error ? error.message : String(error),

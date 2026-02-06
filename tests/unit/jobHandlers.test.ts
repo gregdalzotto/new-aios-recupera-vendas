@@ -52,7 +52,7 @@ describe('Job Handlers', () => {
         user_id: 'user-123',
         external_id: 'ext-123',
         product_id: 'prod-001',
-        value: 299.90,
+        value: 299.9,
         status: 'pending',
         conversation_id: null,
         converted_at: null,

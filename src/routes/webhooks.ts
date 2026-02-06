@@ -3,6 +3,7 @@ import { config } from '../config/env';
 import logger from '../config/logger';
 import { createValidationError, createUnauthorizedError } from '../utils/errors';
 import { FastifyRequestWithTrace } from '../middleware/correlationId';
+import { FastifyRequestWithRawBody } from '../middleware/rawBodyCapture';
 import { createRateLimiterMiddleware } from '../middleware/rateLimiter';
 import { AbandonmentWebhookSchema } from '../types/schemas';
 import { AbandonmentService } from '../services/AbandonmentService';
@@ -185,7 +186,10 @@ export async function postWebhookMessages(fastify: FastifyInstance): Promise<voi
 
       // Step 1: Verify HMAC signature
       const signature = request.headers['x-hub-signature-256'] as string | undefined;
-      const rawBody = JSON.stringify(request.body);
+
+      // Usar rawBody capturado pela middleware, senão fazer fallback para JSON.stringify
+      const requestWithRawBody = request as FastifyRequestWithRawBody;
+      const rawBody = requestWithRawBody.rawBody || JSON.stringify(request.body);
 
       if (!verifyWebhookSignature(rawBody, signature, traceId)) {
         logger.warn('Invalid webhook signature', {

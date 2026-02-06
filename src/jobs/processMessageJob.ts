@@ -1,9 +1,7 @@
+import Bull from 'bull';
 import type { Queue, Job } from 'bull';
 import { getRedisClient } from '../config/redis';
 import logger from '../config/logger';
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Bull = require('bull');
 
 /**
  * Job payload for processing incoming WhatsApp messages

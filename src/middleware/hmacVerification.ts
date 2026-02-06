@@ -3,6 +3,7 @@ import { createHmac } from 'crypto';
 import logger from '../config/logger';
 import { createHmacError } from '../utils/errors';
 import { FastifyRequestWithTrace } from './correlationId';
+import { FastifyRequestWithRawBody } from './rawBodyCapture';
 
 /**
  * Calcula a assinatura HMAC-SHA256 do body da requisição
@@ -40,9 +41,13 @@ export async function hmacVerificationMiddleware(
   }
 
   // Body deve ser string para calcular HMAC
+  // Preferir rawBody se disponível (capturado antes do JSON parsing)
   let bodyStr = '';
 
-  if (typeof request.body === 'string') {
+  const requestWithRawBody = request as FastifyRequestWithRawBody;
+  if (requestWithRawBody.rawBody) {
+    bodyStr = requestWithRawBody.rawBody;
+  } else if (typeof request.body === 'string') {
     bodyStr = request.body;
   } else if (Buffer.isBuffer(request.body)) {
     bodyStr = request.body.toString();

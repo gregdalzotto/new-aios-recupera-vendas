@@ -6,7 +6,10 @@ import { MessageService } from '../services/MessageService';
 import { MessageRepository } from '../repositories/MessageRepository';
 import { AbandonmentRepository } from '../repositories/AbandonmentRepository';
 import { ConversationRepository } from '../repositories/ConversationRepository';
-import ProcessMessageQueue, { ProcessMessagePayload, ProcessMessageResult } from './processMessageJob';
+import ProcessMessageQueue, {
+  ProcessMessagePayload,
+  ProcessMessageResult,
+} from './processMessageJob';
 import SendMessageQueue, { SendMessagePayload, SendMessageResult } from './sendMessageJob';
 
 /**
@@ -131,9 +134,15 @@ export async function processMessageHandler(
     });
 
     // Step 9: Send message via WhatsApp
-    const sendResult = await MessageService.send(conversation.id, phoneNumber, aiResponse.response, 'text', {
-      traceId,
-    });
+    const sendResult = await MessageService.send(
+      conversation.id,
+      phoneNumber,
+      aiResponse.response,
+      'text',
+      {
+        traceId,
+      }
+    );
 
     if (sendResult.status === 'failed') {
       logger.warn('Failed to send message immediately, queuing for retry', {
