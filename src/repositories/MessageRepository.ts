@@ -66,17 +66,19 @@ export class MessageRepository {
   /**
    * Find last N messages in conversation (for context/history)
    * Ordered by created_at DESC (most recent first)
+   * Supports pagination with LIMIT and OFFSET
    */
   static async findByConversationId(
     conversationId: string,
-    limit: number = 10
+    limit: number = 10,
+    offset: number = 0
   ): Promise<Message[]> {
     const result = await query<Message>(
       `SELECT * FROM messages
        WHERE conversation_id = $1
        ORDER BY created_at DESC
-       LIMIT $2`,
-      [conversationId, limit]
+       LIMIT $2 OFFSET $3`,
+      [conversationId, limit, offset]
     );
 
     // Parse metadata for each message
@@ -86,6 +88,82 @@ export class MessageRepository {
       }
       return msg;
     });
+  }
+
+  /**
+   * Find messages with date range filtering
+   * Supports filtering by sender and date range for advanced queries
+   */
+  static async findByConversationIdWithFilters(
+    conversationId: string,
+    options?: {
+      sender?: 'user' | 'sara';
+      fromDate?: Date;
+      toDate?: Date;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<Message[]> {
+    const { sender, fromDate, toDate, limit = 50, offset = 0 } = options || {};
+
+    const conditions = ['conversation_id = $1'];
+    const params: unknown[] = [conversationId];
+    let paramCount = 2;
+
+    if (sender) {
+      conditions.push(`sender_type = $${paramCount++}`);
+      params.push(sender);
+    }
+
+    if (fromDate) {
+      conditions.push(`created_at >= $${paramCount++}`);
+      params.push(fromDate.toISOString());
+    }
+
+    if (toDate) {
+      conditions.push(`created_at <= $${paramCount++}`);
+      params.push(toDate.toISOString());
+    }
+
+    params.push(limit);
+    params.push(offset);
+
+    const whereClause = conditions.join(' AND ');
+    const result = await query<Message>(
+      `SELECT * FROM messages
+       WHERE ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT $${paramCount} OFFSET $${paramCount + 1}`,
+      params
+    );
+
+    // Parse metadata for each message
+    return result.rows.map((msg) => {
+      if (msg.metadata && typeof msg.metadata === 'string') {
+        msg.metadata = JSON.parse(msg.metadata);
+      }
+      return msg;
+    });
+  }
+
+  /**
+   * Count messages in a conversation with optional filters
+   * Used for pagination metadata and analytics
+   */
+  static async countByConversationId(
+    conversationId: string,
+    sender?: 'user' | 'sara'
+  ): Promise<number> {
+    let query_str = 'SELECT COUNT(*) as count FROM messages WHERE conversation_id = $1';
+    const params: unknown[] = [conversationId];
+
+    if (sender) {
+      query_str += ' AND sender_type = $2';
+      params.push(sender);
+    }
+
+    const result = await queryOne<{ count: string }>(query_str, params);
+    return result ? parseInt(result.count, 10) : 0;
   }
 
   /**

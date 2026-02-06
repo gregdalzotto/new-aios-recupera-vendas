@@ -622,6 +622,226 @@ export class MessageService {
   }
 
   /**
+   * Store an incoming message from user (WhatsApp webhook)
+   * Includes dedup check via whatsapp_message_id
+   */
+  static async storeIncomingMessage(
+    conversationId: string,
+    messageText: string,
+    whatsappMessageId: string,
+    metadata?: { intent?: string; sentiment?: string },
+    traceId?: string
+  ) {
+    const id = traceId || crypto.randomUUID();
+
+    try {
+      // Dedup check: verify message not already stored
+      const existing = await MessageRepository.findByWhatsAppMessageId(whatsappMessageId);
+      if (existing) {
+        logger.info('Message already stored (dedup detected)', {
+          conversationId,
+          whatsappMessageId,
+          existingMessageId: existing.id,
+          traceId: id,
+        });
+        return existing;
+      }
+
+      // Store new incoming message
+      const message = await MessageRepository.create({
+        conversation_id: conversationId,
+        sender_type: 'user',
+        message_text: messageText,
+        message_type: 'text',
+        whatsapp_message_id: whatsappMessageId,
+        metadata: metadata || {},
+        status: 'sent',
+      });
+
+      logger.debug('Incoming message stored', {
+        messageId: message.id,
+        conversationId,
+        whatsappMessageId,
+        traceId: id,
+      });
+
+      return message;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to store incoming message', {
+        conversationId,
+        whatsappMessageId,
+        traceId: id,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Store an outgoing message from SARA
+   * Called after message is sent to user
+   */
+  static async storeOutgoingMessage(
+    conversationId: string,
+    messageText: string,
+    metadata?: {
+      response_id?: string;
+      tokens_used?: number;
+      intent?: string;
+      sentiment?: string;
+    },
+    traceId?: string
+  ) {
+    const id = traceId || crypto.randomUUID();
+
+    try {
+      const message = await MessageRepository.create({
+        conversation_id: conversationId,
+        sender_type: 'sara',
+        message_text: messageText,
+        message_type: 'text',
+        metadata: metadata || {},
+        status: 'sent',
+      });
+
+      logger.debug('Outgoing message stored', {
+        messageId: message.id,
+        conversationId,
+        traceId: id,
+      });
+
+      return message;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to store outgoing message', {
+        conversationId,
+        traceId: id,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get conversation history (paginated)
+   * Returns messages ordered by creation time (most recent first)
+   */
+  static async getConversationHistory(
+    conversationId: string,
+    limit: number = 50,
+    offset: number = 0
+  ) {
+    try {
+      const messages = await MessageRepository.findByConversationId(conversationId, limit, offset);
+
+      logger.debug('Retrieved conversation history', {
+        conversationId,
+        messageCount: messages.length,
+        limit,
+        offset,
+      });
+
+      return messages;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to retrieve conversation history', {
+        conversationId,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get conversation history with advanced filtering
+   * Supports filtering by sender, date range, and pagination
+   */
+  static async getConversationHistoryFiltered(
+    conversationId: string,
+    options?: {
+      sender?: 'user' | 'sara';
+      fromDate?: Date;
+      toDate?: Date;
+      limit?: number;
+      offset?: number;
+    }
+  ) {
+    try {
+      const messages = await MessageRepository.findByConversationIdWithFilters(conversationId, {
+        ...options,
+        limit: options?.limit || 50,
+        offset: options?.offset || 0,
+      });
+
+      logger.debug('Retrieved filtered conversation history', {
+        conversationId,
+        messageCount: messages.length,
+        filters: options,
+      });
+
+      return messages;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to retrieve filtered conversation history', {
+        conversationId,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get message count for conversation
+   * Optionally filter by sender type
+   */
+  static async getMessageCount(conversationId: string, sender?: 'user' | 'sara') {
+    try {
+      const count = await MessageRepository.countByConversationId(conversationId, sender);
+
+      logger.debug('Retrieved message count', {
+        conversationId,
+        count,
+        sender,
+      });
+
+      return count;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to get message count', {
+        conversationId,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get message by ID
+   * Useful for retrieving specific message details
+   */
+  static async getMessageById(messageId: string) {
+    try {
+      const message = await MessageRepository.findById(messageId);
+
+      if (!message) {
+        logger.warn('Message not found', { messageId });
+        return null;
+      }
+
+      logger.debug('Retrieved message by ID', { messageId });
+      return message;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to get message by ID', {
+        messageId,
+        error: errorMessage,
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Verify WhatsApp webhook signature (HMAC verification)
    * Used to authenticate incoming webhook events
    */
