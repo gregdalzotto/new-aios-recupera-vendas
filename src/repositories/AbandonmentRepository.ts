@@ -64,4 +64,51 @@ export class AbandonmentRepository {
 
     return result.rows;
   }
+
+  /**
+   * Find all abandonments for a user (including converted)
+   */
+  static async findByUserId(userId: string): Promise<Abandonment[]> {
+    const result = await query<Abandonment>(
+      'SELECT * FROM abandonments WHERE user_id = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+
+    return result.rows;
+  }
+
+  /**
+   * Find abandonment by payment ID (for idempotency check)
+   */
+  static async findByPaymentId(paymentId: string): Promise<Abandonment | null> {
+    return queryOne<Abandonment>('SELECT * FROM abandonments WHERE payment_id = $1', [paymentId]);
+  }
+
+  /**
+   * Mark abandonment as converted with payment tracking
+   * SARA-3.4: Payment Webhook Handler
+   */
+  static async markAsConverted(
+    abandonmentId: string,
+    paymentId: string,
+    status: string,
+    amount?: number
+  ): Promise<Abandonment> {
+    const result = await query<Abandonment>(
+      `UPDATE abandonments
+       SET status = $2,
+           payment_id = $3,
+           converted_at = NOW(),
+           value = COALESCE($4, value)
+       WHERE id = $1
+       RETURNING *`,
+      [abandonmentId, status, paymentId, amount]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Failed to update abandonment record');
+    }
+
+    return result.rows[0];
+  }
 }

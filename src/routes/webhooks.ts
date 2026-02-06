@@ -10,6 +10,7 @@ import { createWebhookRateLimiter } from '../middleware/rateLimiterRedis';
 import { AbandonmentWebhookSchema } from '../types/schemas';
 import { AbandonmentService } from '../services/AbandonmentService';
 import { MessageService } from '../services/MessageService';
+import { PaymentService } from '../services/PaymentService';
 import ProcessMessageQueue from '../jobs/processMessageJob';
 import { ConversationService } from '../services/ConversationService';
 import { UserRepository } from '../repositories/UserRepository';
@@ -611,6 +612,87 @@ async function setupTestScenario(fastify: FastifyInstance): Promise<void> {
 }
 
 /**
+ * POST /webhook/payment
+ * Receives payment status callbacks from payment gateway
+ * Updates abandonment status and conversation state based on payment result
+ * SARA-3.4: Payment Webhook Handler
+ */
+export async function postWebhookPayment(fastify: FastifyInstance): Promise<void> {
+  fastify.post<{ Body: Record<string, unknown> }>('/webhook/payment', async (request, reply) => {
+    const traceId = (request as FastifyRequestWithTrace).traceId;
+
+    logger.info('Payment webhook received', {
+      traceId,
+      contentType: request.headers['content-type'],
+    });
+
+    try {
+      // Process payment webhook
+      const result = await PaymentService.processPaymentWebhook(request.body, traceId);
+
+      // Return appropriate response based on processing result
+      if (result.status === 'already_processed') {
+        logger.info('Payment already processed (idempotency)', {
+          traceId,
+          abandonmentId: result.abandonmentId,
+          paymentStatus: result.paymentStatus,
+        });
+
+        return reply.code(200).send({
+          status: 'already_processed',
+          abandonmentId: result.abandonmentId,
+          conversationId: result.conversationId,
+          paymentStatus: result.paymentStatus,
+          message: result.message,
+        });
+      }
+
+      if (result.status === 'failed') {
+        logger.warn('Payment webhook processing failed', {
+          traceId,
+          error: result.message,
+        });
+
+        // Return 400 for validation errors, 500 for processing errors
+        const statusCode = result.message.includes('Invalid') ? 400 : 500;
+        return reply.code(statusCode).send({
+          status: 'failed',
+          error: result.message,
+        });
+      }
+
+      // Success: payment processed
+      logger.info('Payment webhook processed successfully', {
+        traceId,
+        abandonmentId: result.abandonmentId,
+        conversationId: result.conversationId,
+        paymentStatus: result.paymentStatus,
+      });
+
+      return reply.code(200).send({
+        status: 'processed',
+        abandonmentId: result.abandonmentId,
+        conversationId: result.conversationId,
+        paymentStatus: result.paymentStatus,
+        message: result.message,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      logger.error('Error processing payment webhook', {
+        traceId,
+        error: errorMessage,
+      });
+
+      return reply.code(500).send({
+        status: 'error',
+        error: errorMessage,
+      });
+    }
+  });
+}
+
+/**
  * Register all webhook routes
  */
 export async function registerWebhookRoutes(fastify: FastifyInstance): Promise<void> {
@@ -624,6 +706,7 @@ export async function registerWebhookRoutes(fastify: FastifyInstance): Promise<v
   await getWebhookMessages(fastify);
   await postWebhookMessages(fastify);
   await postWebhookAbandonment(fastify);
+  await postWebhookPayment(fastify);
   await postWebhookDebug(fastify);
   await setupTestScenario(fastify);
 
