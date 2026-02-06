@@ -291,7 +291,8 @@ export class PaymentService {
 
     const totalAbandonments = abandonments.length;
     const convertedAbandonments = abandonments.filter((a) => a.status === 'converted').length;
-    const conversionRate = totalAbandonments > 0 ? (convertedAbandonments / totalAbandonments) * 100 : 0;
+    const conversionRate =
+      totalAbandonments > 0 ? (convertedAbandonments / totalAbandonments) * 100 : 0;
     const totalRevenue = abandonments
       .filter((a) => a.status === 'converted')
       .reduce((sum, a) => sum + a.value, 0);
