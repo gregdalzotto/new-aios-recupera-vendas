@@ -60,3 +60,62 @@ jest.mock('redis', () => {
     createClient: jest.fn(() => mockClient),
   };
 }, { virtual: true });
+
+// Mock bullmq module for tests (avoid Redis connections during testing)
+jest.mock('bullmq', () => {
+  const mockJob = {
+    id: 'job-1',
+    data: {},
+    progress: jest.fn().mockResolvedValue(undefined),
+    log: jest.fn().mockResolvedValue(undefined),
+    updateProgress: jest.fn().mockResolvedValue(undefined),
+    moveToCompleted: jest.fn().mockResolvedValue(undefined),
+    moveToFailed: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockQueue = {
+    add: jest.fn().mockResolvedValue(mockJob),
+    process: jest.fn(),
+    on: jest.fn(),
+    close: jest.fn().mockResolvedValue(undefined),
+    pause: jest.fn().mockResolvedValue(undefined),
+    resume: jest.fn().mockResolvedValue(undefined),
+    getWaitingCount: jest.fn().mockResolvedValue(0),
+    getActiveCount: jest.fn().mockResolvedValue(0),
+    getCompletedCount: jest.fn().mockResolvedValue(0),
+    getFailedCount: jest.fn().mockResolvedValue(0),
+    getDelayedCount: jest.fn().mockResolvedValue(0),
+    isPaused: jest.fn().mockResolvedValue(false),
+    clean: jest.fn().mockResolvedValue([]),
+    getJobCounts: jest.fn().mockResolvedValue({
+      wait: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      delayed: 0,
+    }),
+  };
+
+  const mockWorker = {
+    run: jest.fn().mockResolvedValue(undefined),
+    close: jest.fn().mockResolvedValue(undefined),
+    on: jest.fn(),
+  };
+
+  const mockQueueEvents = {
+    on: jest.fn(),
+    close: jest.fn().mockResolvedValue(undefined),
+  };
+
+  return {
+    Queue: jest.fn(function() {
+      return mockQueue;
+    }),
+    Worker: jest.fn(function() {
+      return mockWorker;
+    }),
+    QueueEvents: jest.fn(function() {
+      return mockQueueEvents;
+    }),
+  };
+}, { virtual: true });
