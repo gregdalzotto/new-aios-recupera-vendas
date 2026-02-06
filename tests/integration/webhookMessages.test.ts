@@ -97,8 +97,6 @@ describe('WhatsApp Message Webhook Integration', () => {
     });
 
     it('should reject invalid signature', async () => {
-      const payload = JSON.stringify(validMetaPayload);
-
       const response = await fastify.inject({
         method: 'POST',
         url: '/webhook/messages',

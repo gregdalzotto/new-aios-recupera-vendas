@@ -10,7 +10,6 @@ export interface Conversation {
   last_user_message_at: string | null;
   followup_sent: boolean;
   created_at: string;
-  updated_at: string;
 }
 
 export class ConversationRepository {
@@ -64,36 +63,39 @@ export class ConversationRepository {
    * Update conversation status
    */
   static async updateStatus(conversationId: string, status: string): Promise<void> {
-    await query('UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2', [
-      status,
-      conversationId,
-    ]);
+    await query('UPDATE conversations SET status = $1 WHERE id = $2', [status, conversationId]);
   }
 
   /**
    * Find conversation by phone number
+   * Joins with users table to match by phone_number
    */
   static async findByPhoneNumber(phoneNumber: string): Promise<Conversation | null> {
-    return queryOne<Conversation>('SELECT * FROM conversations WHERE phone_number = $1', [
-      phoneNumber,
-    ]);
+    return queryOne<Conversation>(
+      `SELECT c.id, c.abandonment_id, c.user_id, c.status, c.message_count,
+              c.last_message_at, c.last_user_message_at, c.followup_sent,
+              c.created_at, c.updated_at
+       FROM conversations c
+       INNER JOIN users u ON c.user_id = u.id
+       WHERE u.phone_number = $1`,
+      [phoneNumber]
+    );
   }
 
   /**
    * Increment message count for conversation
    */
   static async incrementMessageCount(conversationId: string): Promise<void> {
-    await query(
-      'UPDATE conversations SET message_count = message_count + 1, updated_at = NOW() WHERE id = $1',
-      [conversationId]
-    );
+    await query('UPDATE conversations SET message_count = message_count + 1 WHERE id = $1', [
+      conversationId,
+    ]);
   }
 
   /**
    * Update last message timestamp
    */
   static async updateLastMessageAt(conversationId: string, timestamp: Date): Promise<void> {
-    await query('UPDATE conversations SET last_message_at = $1, updated_at = NOW() WHERE id = $2', [
+    await query('UPDATE conversations SET last_message_at = $1 WHERE id = $2', [
       timestamp.toISOString(),
       conversationId,
     ]);
@@ -103,9 +105,9 @@ export class ConversationRepository {
    * Update last user message timestamp
    */
   static async updateLastUserMessageAt(conversationId: string, timestamp: Date): Promise<void> {
-    await query(
-      'UPDATE conversations SET last_user_message_at = $1, updated_at = NOW() WHERE id = $2',
-      [timestamp.toISOString(), conversationId]
-    );
+    await query('UPDATE conversations SET last_user_message_at = $1 WHERE id = $2', [
+      timestamp.toISOString(),
+      conversationId,
+    ]);
   }
 }

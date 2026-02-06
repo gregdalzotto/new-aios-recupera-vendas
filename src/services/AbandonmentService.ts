@@ -96,7 +96,8 @@ export class AbandonmentService {
         userId,
         request.abandonmentId,
         request.productId,
-        request.value
+        request.value,
+        request.paymentLink
       );
 
       logger.info('Abandonment record created', {

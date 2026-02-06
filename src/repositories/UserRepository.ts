@@ -8,7 +8,6 @@ export interface User {
   opted_out_at: string | null;
   opted_out_reason: string | null;
   created_at: string;
-  updated_at: string;
 }
 
 export class UserRepository {
@@ -29,13 +28,24 @@ export class UserRepository {
   /**
    * Create or update user (upsert)
    * Returns the user ID
+   * Uses two-step approach to avoid ON CONFLICT trigger issues
    */
   static async upsert(phone: string, name: string): Promise<string> {
+    // Step 1: Try to find existing user
+    const existing = await queryOne<{ id: string }>(
+      'SELECT id FROM users WHERE phone_number = $1',
+      [phone]
+    );
+
+    if (existing) {
+      // Step 2: Update existing user
+      await query('UPDATE users SET name = $1 WHERE phone_number = $2', [name, phone]);
+      return existing.id;
+    }
+
+    // Step 3: Create new user if not exists
     const result = await query<{ id: string }>(
-      `INSERT INTO users (phone_number, name)
-       VALUES ($1, $2)
-       ON CONFLICT (phone_number) DO UPDATE SET name = COALESCE($2, name), updated_at = NOW()
-       RETURNING id`,
+      'INSERT INTO users (phone_number, name) VALUES ($1, $2) RETURNING id',
       [phone, name]
     );
 
@@ -51,7 +61,7 @@ export class UserRepository {
    */
   static async markOptedOut(userId: string, reason: string): Promise<void> {
     await query(
-      `UPDATE users SET opted_out = true, opted_out_at = NOW(), opted_out_reason = $1, updated_at = NOW()
+      `UPDATE users SET opted_out = true, opted_out_at = NOW(), opted_out_reason = $1
        WHERE id = $2`,
       [reason, userId]
     );

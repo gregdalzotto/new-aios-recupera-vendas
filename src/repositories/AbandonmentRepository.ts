@@ -12,7 +12,6 @@ export interface Abandonment {
   conversion_link: string | null;
   payment_id: string | null;
   created_at: string;
-  updated_at: string;
 }
 
 export class AbandonmentRepository {
@@ -30,13 +29,14 @@ export class AbandonmentRepository {
     userId: string,
     externalId: string,
     productId: string,
-    value: number
+    value: number,
+    paymentLink?: string
   ): Promise<Abandonment> {
     const result = await query<Abandonment>(
-      `INSERT INTO abandonments (user_id, external_id, product_id, value, status)
-       VALUES ($1, $2, $3, $4, 'pending')
+      `INSERT INTO abandonments (user_id, external_id, product_id, value, payment_link, status)
+       VALUES ($1, $2, $3, $4, $5, 'pending')
        RETURNING *`,
-      [userId, externalId, productId, value]
+      [userId, externalId, productId, value, paymentLink || '']
     );
 
     if (result.rows.length === 0) {

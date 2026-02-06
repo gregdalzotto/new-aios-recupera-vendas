@@ -1,5 +1,4 @@
 import { FastifyInstance } from 'fastify';
-import crypto from 'crypto';
 import { config } from '../config/env';
 import logger from '../config/logger';
 import { createValidationError, createUnauthorizedError } from '../utils/errors';
