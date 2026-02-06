@@ -55,3 +55,4 @@ temp/
 recovery/
 .ai/
 .aios/
+.env.example
