@@ -8,10 +8,10 @@ export class MessageRepository {
   static async create(payload: CreateMessagePayload): Promise<Message> {
     const result = await query<Message>(
       `INSERT INTO messages (
-        conversation_id, sender_type, message_text, message_type,
-        whatsapp_message_id, metadata, status
+        conversation_id, from_sender, message_text, message_type,
+        whatsapp_message_id, metadata
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *`,
       [
         payload.conversation_id,
@@ -20,7 +20,6 @@ export class MessageRepository {
         payload.message_type,
         payload.whatsapp_message_id || null,
         payload.metadata ? JSON.stringify(payload.metadata) : null,
-        payload.status || 'pending',
       ]
     );
 
@@ -111,7 +110,7 @@ export class MessageRepository {
     let paramCount = 2;
 
     if (sender) {
-      conditions.push(`sender_type = $${paramCount++}`);
+      conditions.push(`from_sender = $${paramCount++}`);
       params.push(sender);
     }
 
@@ -158,7 +157,7 @@ export class MessageRepository {
     const params: unknown[] = [conversationId];
 
     if (sender) {
-      query_str += ' AND sender_type = $2';
+      query_str += ' AND from_sender = $2';
       params.push(sender);
     }
 
@@ -188,7 +187,7 @@ export class MessageRepository {
   static async countBySender(conversationId: string, senderType: 'user' | 'sara'): Promise<number> {
     const result = await queryOne<{ count: string }>(
       `SELECT COUNT(*) as count FROM messages
-       WHERE conversation_id = $1 AND sender_type = $2`,
+       WHERE conversation_id = $1 AND from_sender = $2`,
       [conversationId, senderType]
     );
 

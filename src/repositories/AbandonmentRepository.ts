@@ -33,7 +33,7 @@ export class AbandonmentRepository {
     paymentLink?: string
   ): Promise<Abandonment> {
     const result = await query<Abandonment>(
-      `INSERT INTO abandonments (user_id, external_id, product_id, value, payment_link, status)
+      `INSERT INTO abandonments (user_id, external_id, product_id, value, conversion_link, status)
        VALUES ($1, $2, $3, $4, $5, 'pending')
        RETURNING *`,
       [userId, externalId, productId, value, paymentLink || '']

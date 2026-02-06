@@ -1,0 +1,121 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sara-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-sara_db}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sara-network
+    restart: unless-stopped
+
+  # Redis Cache & Message Queue
+  redis:
+    image: redis:7-alpine
+    container_name: sara-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sara-network
+    restart: unless-stopped
+
+  # SARA Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sara-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Database
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-sara_db}
+
+      # Redis
+      REDIS_URL: redis://redis:6379
+
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+
+      # WhatsApp
+      WHATSAPP_PHONE_ID: ${WHATSAPP_PHONE_ID:?WHATSAPP_PHONE_ID is required}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:?WHATSAPP_BUSINESS_ACCOUNT_ID is required}
+      WHATSAPP_APP_ID: ${WHATSAPP_APP_ID:?WHATSAPP_APP_ID is required}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:?WHATSAPP_APP_SECRET is required}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:?WHATSAPP_VERIFY_TOKEN is required}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:?WHATSAPP_ACCESS_TOKEN is required}
+      WHATSAPP_TEMPLATE_INITIAL: ${WHATSAPP_TEMPLATE_INITIAL:-boas_vindas_rcc_comandor}
+
+      # SARA Configuration
+      SARA_MAX_CYCLES: ${SARA_MAX_CYCLES:-5}
+      SARA_MESSAGE_HISTORY_LIMIT: ${SARA_MESSAGE_HISTORY_LIMIT:-20}
+      SARA_SYSTEM_PROMPT_CACHE_TTL_MS: ${SARA_SYSTEM_PROMPT_CACHE_TTL_MS:-3600000}
+      SARA_OPENAI_RETRY_MAX_ATTEMPTS: ${SARA_OPENAI_RETRY_MAX_ATTEMPTS:-3}
+      SARA_OPENAI_RETRY_INITIAL_DELAY_MS: ${SARA_OPENAI_RETRY_INITIAL_DELAY_MS:-1000}
+      SARA_WEBHOOK_RATE_LIMIT_WINDOW_MS: ${SARA_WEBHOOK_RATE_LIMIT_WINDOW_MS:-900000}
+      SARA_WEBHOOK_RATE_LIMIT_MAX_REQUESTS: ${SARA_WEBHOOK_RATE_LIMIT_MAX_REQUESTS:-10}
+
+    ports:
+      - "${PORT:-3000}:3000"
+
+    networks:
+      - sara-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  sara-network:
+    driver: bridge
