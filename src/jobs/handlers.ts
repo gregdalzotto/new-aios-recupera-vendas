@@ -1,13 +1,12 @@
 import logger from '../config/logger';
 import { SARA_CONFIG } from '../config/sara';
-import { ConversationService } from '../services/ConversationService';
+import { ConversationService, ConversationStatus } from '../services/ConversationService';
 import { AIService } from '../services/AIService';
 import { MessageService } from '../services/MessageService';
 import { MessageRepository } from '../repositories/MessageRepository';
-import { AbandonmentRepository } from '../repositories/AbandonmentRepository';
 import { ConversationRepository } from '../repositories/ConversationRepository';
-import { UserRepository } from '../repositories/UserRepository';
-import { SaraContextPayload } from '../types/sara';
+import { OptOutDetectionService } from '../services/OptOutDetectionService';
+import { ComplianceService } from '../services/ComplianceService';
 import ProcessMessageQueue, {
   ProcessMessagePayload,
   ProcessMessageResult,
@@ -15,15 +14,23 @@ import ProcessMessageQueue, {
 import SendMessageQueue, { SendMessagePayload } from './sendMessageJob';
 
 /**
- * Handler for processing incoming WhatsApp messages
- * Executes: ConversationService → AIService → MessageService → DB persist
+ * Handler for processing incoming WhatsApp messages (SARA-3.3)
+ * Complete abandonment recovery workflow:
+ * 1. Load conversation
+ * 2. Dedup check
+ * 3. Opt-out detection
+ * 4. 24-hour window enforcement
+ * 5. State transition
+ * 6. AI interpretation
+ * 7. Message storage and send
+ * 8. Cycle tracking
  */
 export async function processMessageHandler(
   payload: ProcessMessagePayload
 ): Promise<ProcessMessageResult> {
   const { phoneNumber, messageText, whatsappMessageId, traceId, conversationId } = payload;
 
-  logger.info('Processing incoming message', {
+  logger.info('Processing incoming message (SARA-3.3)', {
     phoneNumber,
     traceId,
     messageText: messageText.substring(0, 50),
@@ -51,17 +58,56 @@ export async function processMessageHandler(
       };
     }
 
-    // Step 2: Check if user has opted out
+    const convId = conversation.id;
+
+    // Step 2: Dedup check (SARA-3.3 requirement)
+    const existingMessage = await MessageRepository.findByWhatsAppMessageId(whatsappMessageId);
+    if (existingMessage) {
+      logger.info('Duplicate message detected, skipping', {
+        conversationId: convId,
+        whatsappMessageId,
+        traceId,
+      });
+      return {
+        conversationId: convId,
+        messageProcessed: true, // Consider as processed (already handled)
+      };
+    }
+
+    // Step 3: Check message safety (SARA-3.3 compliance)
+    const isSafe = await ComplianceService.checkMessageSafety(messageText, traceId);
+    if (!isSafe) {
+      logger.warn('Unsafe message content detected', {
+        conversationId: convId,
+        traceId,
+      });
+      // Still log but don't process
+      await MessageRepository.create({
+        conversation_id: convId,
+        sender_type: 'user',
+        message_text: messageText,
+        message_type: 'text',
+        whatsapp_message_id: whatsappMessageId,
+        metadata: { intent: 'unsafe' },
+        status: 'pending',
+      });
+      return {
+        conversationId: convId,
+        messageProcessed: false,
+        error: 'Unsafe message content',
+      };
+    }
+
+    // Step 4: Check if user has opted out (SARA-3.3 opt-out detection)
     const isOptedOut = await ConversationService.isOptedOut(conversation.user_id);
     if (isOptedOut) {
       logger.info('User has opted out, skipping response', {
-        phoneNumber,
-        conversationId: conversation.id,
+        conversationId: convId,
         traceId,
       });
-      // Still store the incoming message, but don't respond
+      // Still store message but don't respond
       await MessageRepository.create({
-        conversation_id: conversation.id,
+        conversation_id: convId,
         sender_type: 'user',
         message_text: messageText,
         message_type: 'text',
@@ -70,14 +116,98 @@ export async function processMessageHandler(
         status: 'pending',
       });
       return {
-        conversationId: conversation.id,
+        conversationId: convId,
         messageProcessed: true,
       };
     }
 
-    // Step 3: Store incoming message
+    // Step 5: Check for opt-out intent in message (SARA-3.3 two-layer detection)
+    const optOutCheck = await OptOutDetectionService.detectOptOut(messageText, convId, traceId);
+    if (optOutCheck.isOptOut) {
+      logger.info('Opt-out intent detected in message', {
+        conversationId: convId,
+        method: optOutCheck.method,
+        confidence: optOutCheck.confidence,
+        traceId,
+      });
+
+      // Store incoming message
+      await MessageRepository.create({
+        conversation_id: convId,
+        sender_type: 'user',
+        message_text: messageText,
+        message_type: 'text',
+        whatsapp_message_id: whatsappMessageId,
+        metadata: { intent: 'opt_out_request' },
+        status: 'pending',
+      });
+
+      // Mark user as opted out
+      await OptOutDetectionService.markOptedOut(conversation.user_id, traceId);
+
+      // Close conversation
+      await ConversationService.updateState(
+        convId,
+        ConversationStatus.CLOSED,
+        'User opted out',
+        traceId
+      );
+
+      // Log compliance decision
+      await ComplianceService.logComplianceDecision(
+        convId,
+        'blocked',
+        'User opted out - no further messages',
+        traceId
+      );
+
+      logger.info('Conversation closed due to opt-out', {
+        conversationId: convId,
+        traceId,
+      });
+
+      return {
+        conversationId: convId,
+        messageProcessed: true,
+      };
+    }
+
+    // Step 6: Check 24-hour window (SARA-3.3 compliance)
+    const isWithin24h = await ComplianceService.isWithin24HourWindow(convId, traceId);
+    if (!isWithin24h) {
+      logger.warn('Message received outside 24-hour window', {
+        conversationId: convId,
+        traceId,
+      });
+
+      // Store message but don't process
+      await MessageRepository.create({
+        conversation_id: convId,
+        sender_type: 'user',
+        message_text: messageText,
+        message_type: 'text',
+        whatsapp_message_id: whatsappMessageId,
+        metadata: { intent: 'outside_window' },
+        status: 'pending',
+      });
+
+      await ComplianceService.logComplianceDecision(
+        convId,
+        'warned',
+        'Message outside 24-hour window - no AI processing',
+        traceId
+      );
+
+      return {
+        conversationId: convId,
+        messageProcessed: true,
+        error: 'Message outside 24-hour window',
+      };
+    }
+
+    // Step 7: Store incoming message
     await MessageRepository.create({
-      conversation_id: conversation.id,
+      conversation_id: convId,
       sender_type: 'user',
       message_text: messageText,
       message_type: 'text',
@@ -86,28 +216,82 @@ export async function processMessageHandler(
       status: 'pending',
     });
 
-    // Step 4: Update conversation timestamps
-    await ConversationRepository.incrementMessageCount(conversation.id);
-    await ConversationRepository.updateLastUserMessageAt(conversation.id, new Date());
+    // Step 8: Update conversation timestamps
+    await ConversationRepository.incrementMessageCount(convId);
+    await ConversationRepository.updateLastUserMessageAt(convId, new Date());
 
-    // Step 5: Monta SaraContextPayload (novo!)
-    const saraContext = await buildSaraContext(conversation, phoneNumber, traceId);
+    // Step 9: Transition state if awaiting response (SARA-3.3 state transition)
+    if (conversation.status === 'awaiting_response') {
+      await ConversationService.updateState(
+        convId,
+        ConversationStatus.ACTIVE,
+        'First user message',
+        traceId
+      );
+      logger.info('Conversation transitioned to ACTIVE', {
+        conversationId: convId,
+        traceId,
+      });
+    }
 
-    // Step 6: Call AIService to interpret message COM CONTEXTO DINÂMICO
+    // Step 10: Increment cycle count (SARA-3.3 cycle tracking)
+    const cycleCount = await ConversationService.incrementCycleCount(convId);
+    logger.debug('Cycle count incremented', {
+      conversationId: convId,
+      cycleCount,
+      traceId,
+    });
+
+    // Check if max cycles reached
+    if (cycleCount >= SARA_CONFIG.conversation.maxCycles) {
+      logger.info('Max cycles reached, closing conversation', {
+        conversationId: convId,
+        cycleCount,
+        maxCycles: SARA_CONFIG.conversation.maxCycles,
+        traceId,
+      });
+
+      // Send closure message
+      await MessageService.send(
+        convId,
+        phoneNumber,
+        'Obrigado! Encerramos essa conversa. Você pode continuar comprando através do link fornecido.',
+        'text',
+        { traceId }
+      );
+
+      // Close conversation
+      await ConversationService.updateState(
+        convId,
+        ConversationStatus.CLOSED,
+        'Max cycles reached',
+        traceId
+      );
+
+      return {
+        conversationId: convId,
+        messageProcessed: true,
+        error: 'Max cycles reached',
+      };
+    }
+
+    // Step 11: Build SARA context and call AI
+    const saraContext = await ConversationService.loadForContext(convId, phoneNumber, traceId);
+
+    // Step 12: Call AIService to interpret message
     const aiResponse = await AIService.interpretMessage(saraContext, messageText, traceId);
 
     logger.info('AI response generated', {
-      conversationId: conversation.id,
+      conversationId: convId,
       traceId,
       intent: aiResponse.intent,
       sentiment: aiResponse.sentiment,
-      responsePreview: aiResponse.response.substring(0, 50),
       tokensUsed: aiResponse.tokens_used,
     });
 
-    // Step 8: Store AI response in messages
+    // Step 13: Store AI response in messages
     const responseMessage = await MessageRepository.create({
-      conversation_id: conversation.id,
+      conversation_id: convId,
       sender_type: 'sara',
       message_text: aiResponse.response,
       message_type: 'text',
@@ -120,27 +304,21 @@ export async function processMessageHandler(
       status: 'pending',
     });
 
-    // Step 9: Send message via WhatsApp
-    const sendResult = await MessageService.send(
-      conversation.id,
-      phoneNumber,
-      aiResponse.response,
-      'text',
-      {
-        traceId,
-      }
-    );
+    // Step 14: Send message via WhatsApp
+    const sendResult = await MessageService.send(convId, phoneNumber, aiResponse.response, 'text', {
+      traceId,
+    });
 
     if (sendResult.status === 'failed') {
       logger.warn('Failed to send message immediately, queuing for retry', {
-        conversationId: conversation.id,
+        conversationId: convId,
         traceId,
         error: sendResult.error,
       });
 
       // Queue for retry
       await SendMessageQueue.addJob({
-        conversationId: conversation.id,
+        conversationId: convId,
         phoneNumber,
         messageText: aiResponse.response,
         messageType: 'text',
@@ -148,13 +326,13 @@ export async function processMessageHandler(
       });
 
       return {
-        conversationId: conversation.id,
+        conversationId: convId,
         messageProcessed: true,
         responseMessageId: responseMessage.id,
       };
     }
 
-    // Step 10: Update message with WhatsApp ID if available
+    // Step 15: Update message with WhatsApp ID
     if (sendResult.whatsappMessageId) {
       await MessageRepository.update(responseMessage.id, {
         whatsapp_message_id: sendResult.whatsappMessageId,
@@ -162,17 +340,18 @@ export async function processMessageHandler(
       });
     }
 
-    // Step 11: Update conversation timestamps
-    await ConversationRepository.updateLastMessageAt(conversation.id, new Date());
+    // Step 16: Update conversation timestamps
+    await ConversationRepository.updateLastMessageAt(convId, new Date());
 
-    logger.info('Message processed successfully', {
-      conversationId: conversation.id,
+    logger.info('Message processed successfully (SARA-3.3)', {
+      conversationId: convId,
       traceId,
+      cycleCount,
       responseMessageId: responseMessage.id,
     });
 
     return {
-      conversationId: conversation.id,
+      conversationId: convId,
       messageProcessed: true,
       responseMessageId: responseMessage.id,
     };
@@ -192,102 +371,6 @@ export async function processMessageHandler(
       error: err.message,
     };
   }
-}
-
-/**
- * Monta SaraContextPayload a partir da conversa
- */
-async function buildSaraContext(
-  conversation: any,
-  phoneNumber: string,
-  traceId: string
-): Promise<SaraContextPayload> {
-  // 1. Buscar user
-  const user = await UserRepository.findById(conversation.user_id);
-  if (!user) {
-    throw new Error('User not found for conversation');
-  }
-
-  // 2. Buscar abandonment
-  const abandonment = conversation.abandonment_id
-    ? await AbandonmentRepository.findById(conversation.abandonment_id)
-    : null;
-  if (!abandonment) {
-    throw new Error('Abandonment not found for conversation');
-  }
-
-  // 3. Buscar histórico de mensagens (configurável via SARA_MESSAGE_HISTORY_LIMIT)
-  const messages = await MessageRepository.findByConversationId(
-    conversation.id,
-    SARA_CONFIG.message.historyLimit
-  );
-
-  // 4. Formatar histórico
-  const history = messages.map((msg: any) => ({
-    role: msg.sender_type === 'user' ? ('user' as const) : ('assistant' as const),
-    content: msg.message_text,
-    timestamp: msg.created_at.toISOString(),
-  }));
-
-  // 5. Buscar links de pagamento (original + desconto se existir)
-  // Por enquanto, usar placeholders - será preenchido pelo sistema de pagamento
-  const paymentConfig = {
-    originalLink: `https://pay.example.com/order/${abandonment.id}`,
-    discountLink: undefined, // use undefined instead of null to match interface
-    discountPercent: undefined,
-    discountWasOffered: false,
-  };
-
-  // 6. Contar ciclos (controlado no BD)
-  const cycleCount = 0; // Ciclos são rastreados no serviço, não na conversa
-
-  // 7. Montar payload
-  const context: SaraContextPayload = {
-    user: {
-      id: user.id,
-      name: user.name || 'Usuário', // Default if null
-      phone: phoneNumber,
-    },
-    abandonment: {
-      id: abandonment.id,
-      product: abandonment.product_id || 'Produto',
-      productId: abandonment.product_id || '',
-      cartValue: Math.round(abandonment.value * 100), // converter para centavos
-      currency: 'BRL',
-      createdAt: abandonment.created_at, // already ISO string from DB
-    },
-    conversation: {
-      id: conversation.id,
-      state: conversation.status || 'ACTIVE', // use status field instead
-      cycleCount,
-      maxCycles: 5,
-      startedAt: conversation.created_at, // already ISO string from DB
-    },
-    payment: paymentConfig,
-    history,
-    metadata: {
-      // Note: User interface doesn't have segment field, removed
-      cartAgeMinutes: getMinutesSince(new Date(abandonment.created_at)), // parse string to Date
-    },
-  };
-
-  logger.debug('SARA context built', {
-    traceId,
-    userId: user.id,
-    userName: user.name,
-    cycleCount,
-    historyLength: history.length,
-  });
-
-  return context;
-}
-
-/**
- * Calcula diferença de tempo em minutos
- */
-function getMinutesSince(date: Date): number {
-  const now = new Date();
-  return Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
 }
 
 /**
