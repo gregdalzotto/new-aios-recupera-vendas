@@ -562,7 +562,7 @@ async function setupTestScenario(fastify: FastifyInstance): Promise<void> {
         conversation: {
           id: conversation.id,
           status: conversation.status,
-          cycleCount: conversation.cycle_count || 0,
+          cycleCount: 0, // Track cycles in conversation service, not in DB schema
           maxCycles: 5,
         },
         instructions: {

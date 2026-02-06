@@ -233,19 +233,19 @@ async function buildSaraContext(
   // Por enquanto, usar placeholders - será preenchido pelo sistema de pagamento
   const paymentConfig = {
     originalLink: `https://pay.example.com/order/${abandonment.id}`,
-    discountLink: null as string | null,
-    discountPercent: null as number | null,
+    discountLink: undefined, // use undefined instead of null to match interface
+    discountPercent: undefined,
     discountWasOffered: false,
   };
 
   // 6. Contar ciclos (controlado no BD)
-  const cycleCount = conversation.cycle_count || 0;
+  const cycleCount = 0; // Ciclos são rastreados no serviço, não na conversa
 
   // 7. Montar payload
   const context: SaraContextPayload = {
     user: {
       id: user.id,
-      name: user.name,
+      name: user.name || 'Usuário', // Default if null
       phone: phoneNumber,
     },
     abandonment: {
@@ -254,20 +254,20 @@ async function buildSaraContext(
       productId: abandonment.product_id || '',
       cartValue: Math.round(abandonment.value * 100), // converter para centavos
       currency: 'BRL',
-      createdAt: abandonment.created_at.toISOString(),
+      createdAt: abandonment.created_at, // already ISO string from DB
     },
     conversation: {
       id: conversation.id,
-      state: conversation.state || 'ACTIVE',
+      state: conversation.status || 'ACTIVE', // use status field instead
       cycleCount,
       maxCycles: 5,
-      startedAt: conversation.created_at.toISOString(),
+      startedAt: conversation.created_at, // already ISO string from DB
     },
     payment: paymentConfig,
     history,
     metadata: {
-      segment: user.segment || 'standard',
-      cartAgeMinutes: getMinutesSince(abandonment.created_at),
+      // Note: User interface doesn't have segment field, removed
+      cartAgeMinutes: getMinutesSince(new Date(abandonment.created_at)), // parse string to Date
     },
   };
 

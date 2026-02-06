@@ -69,14 +69,6 @@ export const webhookRateLimiter = rateLimit({
       retryAfter: Math.ceil(SARA_CONFIG.webhook.rateLimitWindowMs / 1000),
     });
   },
-  onLimitReached: (req) => {
-    const phoneNumber = extractPhoneFromWebhook(req);
-    logger.error('Rate limit threshold reached for webhook', {
-      phoneNumber: phoneNumber.substring(0, 10) + '...',
-      limit: SARA_CONFIG.webhook.rateLimitMaxRequests,
-      window: `${SARA_CONFIG.webhook.rateLimitWindowMs / 1000 / 60} minutes`,
-    });
-  },
 });
 
 /**
