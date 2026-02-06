@@ -67,8 +67,8 @@ describe('Rate Limiter Redis Middleware', () => {
 
       await rateLimiterMiddleware(mockRequest as FastifyRequest, mockReply as FastifyReply);
 
-      expect(mockRedisClient.incr).toHaveBeenCalledWith('rate_limit:192.168.1.1');
-      expect(mockRedisClient.expire).toHaveBeenCalledWith('rate_limit:192.168.1.1', 60);
+      expect(mockRedisClient.incr).toHaveBeenCalledWith('rate_limit:ip:192.168.1.1');
+      expect(mockRedisClient.expire).toHaveBeenCalledWith('rate_limit:ip:192.168.1.1', 60);
     });
 
     it('should allow multiple requests under limit', async () => {
