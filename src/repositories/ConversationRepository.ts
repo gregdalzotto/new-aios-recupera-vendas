@@ -6,6 +6,7 @@ export interface Conversation {
   user_id: string;
   status: string;
   message_count: number;
+  cycle_count?: number;
   last_message_at: string | null;
   last_user_message_at: string | null;
   followup_sent: boolean;
@@ -107,6 +108,16 @@ export class ConversationRepository {
   static async updateLastUserMessageAt(conversationId: string, timestamp: Date): Promise<void> {
     await query('UPDATE conversations SET last_user_message_at = $1 WHERE id = $2', [
       timestamp.toISOString(),
+      conversationId,
+    ]);
+  }
+
+  /**
+   * Update cycle count for conversation
+   */
+  static async updateCycleCount(conversationId: string, cycleCount: number): Promise<void> {
+    await query('UPDATE conversations SET cycle_count = $1 WHERE id = $2', [
+      cycleCount,
       conversationId,
     ]);
   }
