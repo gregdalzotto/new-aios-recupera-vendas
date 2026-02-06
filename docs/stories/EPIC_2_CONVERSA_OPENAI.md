@@ -272,80 +272,235 @@ Implementar o fluxo completo de conversa entre usuário e Sara: gerenciamento de
 
 ---
 
-## Story SARA-2.5: Fila de Tarefas (Bull) & Job Processing
+## Story SARA-2.5: Job Handlers para Processamento de Mensagens (Bull)
 
 **Como** desenvolvedor,
-**Quero** processar webhooks assincronamente,
-**Para** não bloquear respostas HTTP e permitir retries.
+**Quero** implementar os job handlers para processar mensagens assincronamente,
+**Para** não bloquear respostas HTTP e permitir retries com falha.
+
+**Status**: Infrastructure ready (queues created in SARA-2.4), handlers missing
 
 ### Acceptance Criteria
 
-1. **Bull Queue Configurada:**
-   - [ ] Redis configurado para queue (REDIS_URL em .env)
-   - [ ] Queue criada com nome 'message-processing'
-   - [ ] Settings: attempts: 3, backoff: exponential (1000, 2000, 4000, 8000)
+1. **ProcessMessageQueue Handler Implementado:**
+   - [x] ProcessMessageQueue exists (`src/jobs/processMessageJob.ts`)
+   - [ ] Handler registrado que executa quando jobs chegam à fila
+   - [ ] Fluxo: ConversationService → AIService → MessageService → DB persist
+   - [ ] Extrai phoneNumber do job payload
+   - [ ] Carrega conversation context via ConversationService.findByPhoneNumber()
+   - [ ] Detecção de opt-out (se usuário pediu para sair, não responde)
+   - [ ] Chamada AIService.interpretMessage() com contexto
+   - [ ] Envio via MessageService.send() com tipo "response"
+   - [ ] Armazena em MessageRepository
+   - [ ] Atualiza ConversationService.updateTimestamps()
+   - [ ] Qualquer erro: loga com traceId + deixa Bull fazer retry automático
 
-2. **Job Handler:**
-   - [ ] Processa eventos de webhook POST /webhook/messages
-   - [ ] Chamadas sequenciais: ServiçoConversa → OptOutDetection → ServiçoIA → ServiçoMensagem → DB persist
-   - [ ] Qualquer erro: loga com trace ID + deixa Bull fazer retry
+2. **SendMessageQueue Handler (Retry):**
+   - [x] SendMessageQueue exists (`src/jobs/sendMessageJob.ts`)
+   - [ ] Handler para processar retries de mensagens falhadas
+   - [ ] Recebe messageId do payload
+   - [ ] Busca MessageRepository para obter dados originais
+   - [ ] Tenta enviar via MessageService.send()
+   - [ ] Se sucesso: marca como enviado em DB
+   - [ ] Se falha: deixa Bull fazer retry até 3x com backoff exponencial
+   - [ ] Log de cada attempt com traceId
 
-3. **Retry Behavior:**
+3. **Retry Behavior (Bull Automático):**
+   - [x] Queues configuradas com attempts: 3 e backoff: exponential
    - [ ] 1º attempt: executar imediatamente
-   - [ ] Se falha: aguarda 1s antes de retry 2
-   - [ ] Se falha: aguarda 2s antes de retry 3
-   - [ ] Se falhas 3: move para 'failed' queue, alerta ops
+   - [ ] Se falha: retry após 1s (1000ms)
+   - [ ] Se falha: retry após 2s (2000ms)
+   - [ ] Se falhas 3x: move para 'failed' queue
+   - [ ] Failed jobs permanecem em Redis para inspeção/retry manual
 
-4. **Monitoramento:**
-   - [ ] Log de job started, completed, failed
-   - [ ] Métrica: queue depth (# tarefas pending)
-   - [ ] Alerta se queue > 100
+4. **Application Bootstrap:**
+   - [ ] Handlers registrados na inicialização da app
+   - [ ] ProcessMessageQueue.registerHandler(processMessageHandler)
+   - [ ] SendMessageQueue.registerHandler(sendMessageHandler)
+   - [ ] Verificar que queues estão listening (console.log ou logger)
 
-5. **Testes:**
-   - [ ] Teste de job sucesso (processado + DB atualizado)
-   - [ ] Teste de job com erro (falha + retry)
-   - [ ] Teste de retry com falhas múltiplas
+5. **Error Handling & Logging:**
+   - [ ] Cada handler loga: job started, completed, failed
+   - [ ] Log inclui: traceId, jobId, phoneNumber, error details
+   - [ ] Log format: JSON estruturado com timestamp
+   - [ ] Errors não são thrown (Bull faz retry), apenas logged
+
+6. **Testes:**
+   - [ ] Teste unitário: processMessageHandler sucesso (context loaded → AI called → message sent)
+   - [ ] Teste unitário: sendMessageHandler sucesso
+   - [ ] Teste de integração: job failure + retry logic
+   - [ ] Teste mock: ConversationService, AIService, MessageService
+   - [ ] Teste com real data: seu phone number +5548999327881
+   - [ ] Validação: 3 retries, exponential backoff funcionando
 
 ### Notas Técnicas
-- Bull usa Redis (compartilha com cache)
-- Job data: { webhookPayload, phoneNumber, traceId }
-- Sempre armazenar traceId em job para linking logs
-- Failed jobs movem para 'failed' queue (manual inspection depois)
+
+**Arquitetura Atual:**
+```
+POST /webhook/messages
+  ↓
+hmacVerificationMiddleware ✅
+  ↓
+WebhookHandler.postWebhookMessages() ✅
+  ↓
+ProcessMessageQueue.addJob() ✅
+  ↓
+❌ FALTA: Job handler que executa
+  ├─> ConversationService.findByPhoneNumber()
+  ├─> AIService.interpretMessage()
+  ├─> MessageService.send()
+  └─> MessageRepository.create()
+  ↓
+SendMessageQueue (para retries de falhas)
+  ↓
+❌ FALTA: Job handler para retry
+```
+
+**Configuração Bull:**
+- ProcessMessageQueue: `{ attempts: 3, backoff: { type: 'exponential', delay: 1000 } }`
+- SendMessageQueue: mesmo config
+- Redis: usa REDIS_URL do .env
+- Job concurrency: processar 1 job por vez (não paralelo)
+
+**Job Payload Structure:**
+```typescript
+// ProcessMessageQueue
+interface ProcessMessageJobPayload {
+  phoneNumber: string;           // E.164 format +55...
+  messageText: string;           // User's message
+  whatsappMessageId: string;     // Meta's unique ID
+  traceId: string;               // Correlation ID
+  conversationId?: string;       // Optional if already loaded
+}
+
+// SendMessageQueue
+interface SendMessageJobPayload {
+  messageId: string;             // Reference to Message record
+  phoneNumber: string;
+  messageText: string;
+  traceId: string;
+}
+```
+
+**Error Handling Examples:**
+- ConversationService returns null: log warning, don't send message, mark as skipped
+- AIService timeout: use fallback message, continue
+- MessageService fails (API error): let Bull retry (don't throw, just log)
+- Database errors: log with context, let Bull retry
 
 ### Arquivos Afetados
-- src/queue/messageQueue.ts (novo - setup + handlers)
-- src/jobs/processWebhookMessage.ts (novo - job logic)
-- src/utils/jobLogger.ts (novo - consistent logging)
-- .env.example (REDIS_URL)
-- tests/integration/jobs.test.ts (novo)
+
+**New/Modified:**
+- src/jobs/processMessageJob.ts (modify: add handler registration)
+- src/jobs/sendMessageJob.ts (modify: add handler registration)
+- src/index.ts ou src/server.ts (import + register handlers on startup)
+- src/config/logger.ts (ensure structured JSON logging)
+- tests/unit/jobHandlers.test.ts (novo - handler unit tests)
+- tests/integration/jobFlow.test.ts (novo - E2E job flow)
+
+**Already Exist (Use As-Is):**
+- src/services/ConversationService.ts ✅
+- src/services/AIService.ts ✅
+- src/services/MessageService.ts ✅
+- src/repositories/MessageRepository.ts ✅
+- src/config/redis.ts ✅
+- src/routes/webhooks.ts ✅
 
 ### Dependencies
-- Story SARA-2.1, SARA-2.2, SARA-2.3
+- ✅ Story SARA-2.1: ConversationService
+- ✅ Story SARA-2.2: AIService
+- ✅ Story SARA-2.3: MessageService
+- ✅ Story SARA-2.4: Webhook POST /webhook/messages
+- ✅ Infrastructure: Redis, Bull queues, environment config
+
+### Dev Agent Record - SARA-2.5
+
+**Status**: 🏗️ IN DEVELOPMENT (Ready for @dev)
+**Agent**: @dev (Dex)
+**Start Time**: [TO BE FILLED BY @dev]
+**Completion Time**: [TO BE FILLED BY @dev]
 
 ---
 
-## Summary
-
-**EPIC 2 contém 5 stories** que implementam:
-- ✅ Gerenciamento de estados de conversa
-- ✅ Integração com OpenAI para IA interpretação
-- ✅ Envio de mensagens via WhatsApp
-- ✅ Webhook para receber respostas do usuário
-- ✅ Processamento assíncrono com retry
-
-**Story Points Estimado:** ~50 pontos (10+12+10+15+3)
-
-**Sequência de Implementação:**
-1. SARA-2.1 (ConversationService)
-2. SARA-2.2 (AIService)
-3. SARA-2.3 (MessageService)
-4. SARA-2.5 (Bull Queue)
-5. SARA-2.4 (Webhook - depende de todos acima)
+**Estimated Story Points**: 8 pts (handlers + tests + integration)
+**Priority**: P0 (Critical - blocks production deployment)
+**Owner**: @dev (Dex)
 
 ---
 
-**Status**: Ready for @dev implementation
-**Architect Sign-off**: @architect (Aria) ✅
-**Product Owner**: @po (Pax) - pending approval
+## EPIC 2 Status & Implementation Record
 
-— River, removendo obstáculos 🌊
+### Summary
+
+**EPIC 2 contém 5 stories** que implementam o fluxo completo de conversa:
+- ✅ **SARA-2.1**: Gerenciamento de estados de conversa
+- ✅ **SARA-2.2**: Integração com OpenAI para IA interpretação
+- ✅ **SARA-2.3**: Envio de mensagens via WhatsApp
+- ✅ **SARA-2.4**: Webhook para receber respostas do usuário
+- 🏗️ **SARA-2.5**: Processamento assíncrono com retry (handlers)
+
+**Story Points:** ~50 pontos total (10+12+10+15+8)
+
+### Implementação Executada
+
+**Commits:**
+```
+20aab80 feat: implement SARA-2.4 webhook handler for receiving WhatsApp messages
+81d53dd feat: implement SARA-2.3 MessageService with WhatsApp integration
+17bfa4f feat: implement SARA-2.2 AIService - OpenAI integration for message interpretation
+44702fb feat: add Message model, MessageRepository, and job queue infrastructure
+11a82c1 feat: implement SARA-2.1 ConversationService, Redis rate limiter
+d032efe refactor: prepare repositories and jobs for EPIC 2 message processing
+```
+
+### Status Atual
+
+| Story | Status | Commits | Detalhes |
+|-------|--------|---------|----------|
+| SARA-2.1 | ✅ COMPLETA | 11a82c1 | ConversationService com 7 métodos, transições de estado |
+| SARA-2.2 | ✅ COMPLETA | 17bfa4f | AIService com OpenAI, intent/sentiment detection, timeout handling |
+| SARA-2.3 | ✅ COMPLETA | 81d53dd | MessageService com retry exponencial, validação E.164 |
+| SARA-2.4 | ✅ COMPLETA | 20aab80 | Webhook POST /webhook/messages com HMAC, dedup, enfileiramento |
+| SARA-2.5 | 🏗️ IN PROGRESS | d032efe (prep) | Infrastructure pronta, handlers precisam ser implementados |
+
+### Bloqueador Crítico Removido
+
+**Commit d032efe** resolveu bloqueadores:
+- ✅ Adicionado `import 'dotenv/config'` para auto-loading
+- ✅ Refatorado UserRepository.upsert() com two-step approach
+- ✅ Adicionado `paymentLink` support em AbandonmentRepository
+- ✅ Otimizado ConversationRepository.findByPhoneNumber() com JOIN
+- ✅ Suporte ESM em job files (createRequire)
+
+### Próximo Passo
+
+**SARA-2.5 Job Handlers** - Pronto para @dev implementar:
+1. ProcessMessageQueue handler (processamento de mensagens recebidas)
+2. SendMessageQueue handler (retry de mensagens falhadas)
+3. Testes E2E com seu phone number +5548999327881
+
+---
+
+### Sign-offs
+
+- **Architect**: @architect (Aria) ✅ - Infraestrutura validada
+- **Code Quality**: TypeScript ✅, Linting ✅ (26 warnings, 0 errors)
+- **Status**: ✅ Ready for @dev - SARA-2.5 job handlers implementation
+- **Product Owner**: @po (Pax) - pending approval
+
+---
+
+## Próxima Ação
+
+**Chamar @dev para implementar SARA-2.5 com rigor AIOS:**
+1. Story formal definida (veja acima)
+2. Acceptance criteria claras
+3. Dependências já implementadas
+4. Testes estruturados
+
+**Comando para @dev:**
+```
+@dev: Implemente SARA-2.5 (Job Handlers) seguindo story em docs/stories/EPIC_2_CONVERSA_OPENAI.md
+```
+
+— Aria (@architect), infraestrutura validada 🏛️
